@@ -48,7 +48,8 @@ class ChatClient:
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
             "temperature": 0, "max_tokens": self.max_tokens,
-            "reasoning_effort": self.reasoning, "stream": False}
+            "reasoning_effort": self.reasoning, "stream": False,
+            "response_format": {"type": "json_object"}}
         key = os.getenv("CLINIC_API_KEY", "ollama")
         req = urllib.request.Request(self.base_url + "/chat/completions",
             data=json.dumps(body).encode(),
@@ -67,6 +68,7 @@ class ChatClient:
             "usage_reported": "prompt_tokens" in usage and "completion_tokens" in usage})
         try:
             choice = result["choices"][0]
+            self.calls[-1]["final_source"] = "content"
             self.calls[-1]["finish_reason"] = choice.get("finish_reason")
             if choice.get("finish_reason") == "length":
                 raise ModelError("Generation truncated; increase --max-tokens or shorten prompt")
@@ -84,5 +86,19 @@ class ChatClient:
             if not isinstance(content, str) or not content.strip():
                 raise ResponseFormatError("No final answer content returned")
             return parse_json(content)
+        except json.JSONDecodeError as exc:
+            # shortcut: only one missing outer brace; use an enforcing backend if other syntax failures recur.
+            if (choice.get("finish_reason") == "stop" and exc.pos == len(exc.doc)
+                    and exc.doc.startswith("{") and exc.doc.endswith("}")):
+                try:
+                    repaired = parse_json(exc.doc + "}")
+                except ValueError:
+                    pass
+                else:
+                    self.calls[-1]["format_repair"] = {"kind": "missing_outer_closing_brace", "raw_final": content}
+                    return repaired
+            self.calls[-1]["format_error"] = {"message": exc.msg, "line": exc.lineno,
+                "column": exc.colno, "position": exc.pos, "raw_final": content}
+            raise ResponseFormatError(f"Invalid final JSON (JSONDecodeError): {exc.msg} at line {exc.lineno}, column {exc.colno}") from None
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise ResponseFormatError(f"Invalid final JSON ({type(exc).__name__})") from None

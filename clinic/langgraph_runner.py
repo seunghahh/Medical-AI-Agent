@@ -1,5 +1,5 @@
 """Case-local LangGraph loop; environment sources and gold never enter checkpoints."""
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 from uuid import uuid4
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -13,6 +13,8 @@ class EncounterState(TypedDict):
     action: dict | None
     final: dict | None
     error: str | None
+    working_memory: NotRequired[dict]
+    memory_updates: NotRequired[list]
 
 
 def build_graph(encounter):

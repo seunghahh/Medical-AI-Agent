@@ -1,0 +1,119 @@
+{
+  "note": "Synthetic software rubric fixtures, not physician adjudication or clinical validation. expected:null requires uncertain.",
+  "fixtures": [
+    {
+      "name": "reviewed_PML_synonym",
+      "prediction": "PML",
+      "reference": "Progressive multifocal leukoencephalopathy",
+      "record": {},
+      "expected": true
+    },
+    {
+      "name": "MI_synonym",
+      "prediction": "Heart attack",
+      "reference": "Myocardial infarction",
+      "record": {},
+      "expected": true
+    },
+    {
+      "name": "appropriate_age_refinement",
+      "prediction": "Infantile seborrheic dermatitis",
+      "reference": "Seborrheic dermatitis",
+      "record": {
+        "SAY": {
+          "Demographics": "A 2-month-old infant"
+        },
+        "EXAM": {
+          "Skin": "Greasy yellow scales on the scalp"
+        }
+      },
+      "expected": true
+    },
+    {
+      "name": "contradictory_age_refinement",
+      "prediction": "Infantile seborrheic dermatitis",
+      "reference": "Seborrheic dermatitis",
+      "record": {
+        "SAY": {
+          "Demographics": "A 65-year-old adult"
+        },
+        "EXAM": {
+          "Skin": "Greasy scales on the scalp"
+        }
+      },
+      "expected": false
+    },
+    {
+      "name": "unsupported_age_refinement",
+      "prediction": "Infantile seborrheic dermatitis",
+      "reference": "Seborrheic dermatitis",
+      "record": {
+        "EXAM": {
+          "Skin": "Greasy scales on the scalp"
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "broad_lymphoma_not_specific_disease",
+      "prediction": "Lymphoma",
+      "reference": "Diffuse large B-cell lymphoma",
+      "record": {
+        "TEST": {
+          "Biopsy": "Diffuse large B-cell lymphoma confirmed"
+        }
+      },
+      "expected": false
+    },
+    {
+      "name": "supported_pathology_refinement",
+      "prediction": "Diffuse large B-cell lymphoma",
+      "reference": "Lymphoma",
+      "record": {
+        "TEST": {
+          "Biopsy": "Diffuse large B-cell lymphoma confirmed"
+        }
+      },
+      "expected": true
+    },
+    {
+      "name": "unsupported_pathology_refinement",
+      "prediction": "Diffuse large B-cell lymphoma",
+      "reference": "Lymphoma",
+      "record": {
+        "SAY": {
+          "History": "Enlarged lymph nodes. Histological subtype not recorded."
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "symptom_not_cause",
+      "prediction": "Intestinal obstruction",
+      "reference": "Hirschsprung disease",
+      "record": {},
+      "expected": false
+    },
+    {
+      "name": "different_psychiatric_disease",
+      "prediction": "Schizophrenia",
+      "reference": "Schizophreniform disorder",
+      "record": {},
+      "expected": false
+    },
+    {
+      "name": "different_headache_disease",
+      "prediction": "Migraine",
+      "reference": "Tension-type headache",
+      "record": {},
+      "expected": false
+    },
+    {
+      "name": "abbreviation_not_identity",
+      "prediction": "Mitral stenosis (MS)",
+      "reference": "Multiple sclerosis (MS)",
+      "record": {},
+      "expected": false
+    }
+  ]
+}

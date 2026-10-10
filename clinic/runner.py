@@ -3,6 +3,7 @@ import re
 import time
 from .client import ModelError
 from .data import flatten
+from .memory import apply_update, build_memory
 
 
 def validate_action(action, round_name, force=False):
@@ -59,13 +60,23 @@ def add_evidence(evidence, kind, path, value, turn, status="OBSERVED"):
 
 class Encounter:
     """Shared action semantics for the plain loop and LangGraph; hidden case stays here."""
-    def __init__(self, case, doctor, simulator, round_name, max_turns, max_seconds, client, verbose=False):
+    def __init__(self, case, doctor, simulator, round_name, max_turns, max_seconds, client, verbose=False, working_memory=False, information_mode="interactive", observer=None):
         self.case, self.doctor, self.simulator = case, doctor, simulator
         self.round_name, self.max_turns, self.client = round_name, max_turns, client
         self.start = time.monotonic()
         self.deadline = self.start + max_seconds
         self.call_start = len(client.calls) if client else 0
+        self.review_start = len(getattr(doctor, "reviews", []))
+        self.observer = observer
         self.verbose = verbose
+        self.working_memory = working_memory
+        if information_mode not in ("interactive", "full"):
+            raise ValueError("information_mode must be interactive or full")
+        self.information_mode = information_mode
+
+    def emit(self, kind, **data):
+        if self.observer:
+            self.observer(kind, case_index=self.case.index, **data)
 
     def log(self, text):
         if self.verbose:
@@ -80,8 +91,19 @@ class Encounter:
         for path, value in flatten(opening["vital_signs"]).items():
             if path:
                 add_evidence(evidence, "VITAL", "Vital_Signs." + path, value, 0)
-        return {"evidence": evidence, "history": [], "turns": 0, "rejections": 0,
-                "action": None, "final": None, "error": None}
+        if self.information_mode == "full":
+            # Diagnostic ablation: reveal only records accessible in this round, never the gold.
+            kinds = ("SAY", "EXAM", "TEST") if self.round_name == "final" else ("SAY", "EXAM")
+            for kind in kinds:
+                for path, value in self.case.sources[kind].items():
+                    if not any(e["source"] == path and e["value"] == value for e in evidence):
+                        add_evidence(evidence, kind, path, value, 0)
+        state = {"evidence": evidence, "history": [], "turns": 0, "rejections": 0,
+                 "action": None, "final": None, "error": None}
+        if self.working_memory:
+            state.update(working_memory=build_memory(evidence), memory_updates=[])
+        self.emit("case_start", evidence=evidence, max_turns=self.max_turns, memory_enabled=self.working_memory)
+        return state
 
     def check_deadline(self):
         if time.monotonic() >= self.deadline:
@@ -91,6 +113,7 @@ class Encounter:
         try:
             self.check_deadline()
             public = {"round": self.round_name, "opening": self.case.opening,
+                "information_mode": self.information_mode,
                 "evidence": state["evidence"], "history": state["history"],
                 "turns_used": state["turns"], "turns_remaining": self.max_turns-state["turns"],
                 "force_diagnose": self.force_diagnose(state),
@@ -100,19 +123,40 @@ class Encounter:
                     and h["action"].get("intent") == "question"],
                 "unavailable_requests": [e["source"] for e in state["evidence"]
                     if e["status"] == "UNKNOWN" and e["turn"] > 0]}
+            memory = build_memory(state["evidence"], state.get("working_memory")) if self.working_memory else None
+            if memory is not None:
+                public["working_memory"] = memory
             if "SAY" not in public["action_policy"]["allowed_actions"]:
                 self.log("진행 정책: " + public["action_policy"]["reason"])
+            self.emit("thinking", turn=state["turns"], attempt=len(state["history"])+1)
             action = self.doctor.act(public, self.deadline)
+            updates = list(state.get("memory_updates", []))
+            if self.working_memory and isinstance(action, dict):
+                action = dict(action)
+                update = action.pop("working_memory", None)
+                if update is None and any(k in action for k in ("hypotheses", "next_information_needed", "next_action_reason")):
+                    update = {k: action.pop(k) for k in ("hypotheses", "next_information_needed", "next_action_reason") if k in action}
+                if update is not None:
+                    memory, error = apply_update(update, state["evidence"], memory)
+                    updates.append({"turn": state["turns"], "accepted": error is None,
+                                    "error": error, "hypotheses": memory["hypotheses"],
+                                    "next_information_needed": memory["next_information_needed"],
+                                    "next_action_reason": memory["next_action_reason"]})
+                    if error:
+                        self.log("메모리 갱신 제외: " + error)
             self.check_deadline()
             if self.client:
                 own = [c for c in self.client.calls if c["role"] == "doctor"]
                 if sum(c["input_tokens"] for c in own) > 500000 or sum(c["output_tokens"] for c in own) > 100000:
                     raise ModelError("Doctor session token budget exceeded")
-            return {**state, "action": action}
+            return {**state, "action": action, **({"working_memory": memory, "memory_updates": updates} if self.working_memory else {})}
         except ModelError as exc:
             return {**state, "error": str(exc)}
 
     def action_policy(self, state):
+        if self.information_mode == "full":
+            return {"allowed_actions": ["DIAGNOSE"], "consecutive_no_new_information": 0,
+                    "reason": "Diagnostic ablation: all recorded information available in this round is already supplied. Submit DIAGNOSE using those observed facts."}
         stalled = 0
         for item in reversed(state["history"]):
             action = item["action"]
@@ -144,14 +188,20 @@ class Encounter:
                 or self.action_policy(state)["allowed_actions"] == ["DIAGNOSE"])
 
     def execute(self, state):
+        if self.working_memory:
+            # A plan describes this attempt, not a pending task after its outcome.
+            state = {**state, "working_memory": {**state["working_memory"],
+                "next_information_needed": "", "next_action_reason": ""}}
         # Copy lists so updating observations cannot mutate earlier checkpoints.
         state = {**state, "evidence": list(state["evidence"]), "history": list(state["history"])}
         action, evidence, history = state["action"], state["evidence"], state["history"]
         self.log(f"\n[case={self.case.index} 시도={len(history)+1} 사용턴={state['turns']}/{self.max_turns}]\n"
                  f"의사: {json.dumps(action, ensure_ascii=False)}")
+        self.emit("action", action=action, turn=state["turns"], attempt=len(history)+1)
         def reject(reason):
             state["rejections"] += 1
             history.append({"action": action, "accepted": False, "feedback": reason, "turn": state["turns"]})
+            self.emit("rejected", reason=reason, turn=state["turns"])
             self.log(f"거절 ({state['rejections']}/10): {reason}")
             if state["rejections"] >= 10:
                 state["error"] = "Too many rejected actions"
@@ -177,9 +227,11 @@ class Encounter:
             if reason:
                 return reject(reason)
             if action["action"] == "DIAGNOSE":
+                self.emit("diagnosis", action=action, turn=state["turns"])
                 state["final"] = action
                 history.append({"action": action, "accepted": True, "turn": state["turns"]})
                 return state
+            self.emit("resolving", action=action, turn=state["turns"])
             observation = self.simulator.resolve(self.case, action, self.deadline)
             self.check_deadline()
             if not observation["accepted"]:
@@ -198,9 +250,14 @@ class Encounter:
             history.append({"action": action, "accepted": True, "turn": state["turns"],
                             "evidence_ids": new_ids, "feedback": observation["reason"],
                             "new_information": new_information})
+            if self.working_memory:
+                state["working_memory"] = build_memory(evidence, state.get("working_memory"))
             if action.get("intent") == "question" or action["action"] in {"EXAM", "TEST"}:
                 self.log("정보 갱신: " + ("새 근거 확보" if new_information else "새 정보 없음 (UNKNOWN 또는 기존 근거 재조회)"))
             responses = evidence[-len(new_ids):] if new_ids else []
+            self.emit("observation", evidence=responses, turn=state["turns"], new_information=new_information)
+            if self.working_memory:
+                self.emit("memory", memory=state["working_memory"], turn=state["turns"])
             for item in responses:
                 self.log(f"응답 [turn={item['turn']} {item['id']} {item['status']} {item['source']}]: "
                          f"{json.dumps(item['value'], ensure_ascii=False)}")
@@ -216,6 +273,7 @@ class Encounter:
         # Gold is consulted only AFTER the encounter ends, outside graph state.
         score = normalize_diagnosis(final["diagnosis"]) == normalize_diagnosis(self.case.gold) if final else False
         return {"case_index": self.case.index, "mode": "scripted_demo" if demo else "model",
+            "information_mode": self.information_mode,
             "round": self.round_name, "completed": final is not None, "error": state["error"],
             "diagnosis": final["diagnosis"] if final else None,
             "gold_diagnosis": self.case.gold, "exact_match": None if demo else score,
@@ -223,14 +281,16 @@ class Encounter:
             "turns": state["turns"], "rejections": state["rejections"], "seconds": time.monotonic()-self.start,
             "history": state["history"], "evidence": state["evidence"],
             "soap": soap_from_evidence(final, state["evidence"]) if final else None,
+            "diagnosis_reviews": getattr(self.doctor, "reviews", [])[self.review_start:],
             "model_calls": self.client.calls[self.call_start:] if self.client else []}
 
 
+
 def run_case(case, doctor, simulator, round_name="preliminary", max_turns=50,
-             max_seconds=1200, demo=False, client=None, engine="plain", verbose=False):
+             max_seconds=1200, demo=False, client=None, engine="plain", verbose=False, working_memory=False, information_mode="interactive", observer=None):
     if engine not in {"plain", "langgraph"}:
         raise ValueError("engine must be plain or langgraph")
-    encounter = Encounter(case, doctor, simulator, round_name, max_turns, max_seconds, client, verbose)
+    encounter = Encounter(case, doctor, simulator, round_name, max_turns, max_seconds, client, verbose, working_memory, information_mode, observer)
     state = encounter.initial_state()
     orchestration = {"engine": engine}
     if engine == "langgraph":
@@ -243,4 +303,6 @@ def run_case(case, doctor, simulator, round_name="preliminary", max_turns=50,
             state = encounter.choose(state)
             if not state["error"]:
                 state = encounter.execute(state)
-    return {**encounter.result(state, demo), "orchestration": orchestration}
+    encounter.emit("case_end", completed=state["final"] is not None, error=state["error"], turn=state["turns"])
+    return {**encounter.result(state, demo), "orchestration": orchestration,
+            "working_memory": state.get("working_memory"), "memory_updates": state.get("memory_updates", [])}

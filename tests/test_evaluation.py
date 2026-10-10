@@ -1,3 +1,4 @@
+import os
 import copy
 import json
 import subprocess
@@ -104,6 +105,17 @@ class EvaluationTests(unittest.TestCase):
             self.save(after, result, changed)
             with self.assertRaisesRegex(ValueError, "doctor_model"):
                 compare_runs(before, after)
+            changed = {**manifest, "simulator_resolver": {"prompt_sha256": "different"}}
+            (after / "manifest.json").write_text(json.dumps(changed))
+            with self.assertRaisesRegex(ValueError, "simulator_resolver"):
+                compare_runs(before, after)
+            _, comparison = compare_runs(before, after, allow_resolver_change=True)
+            self.assertTrue(comparison['resolver_changed'])
+            self.assertTrue(comparison['resolver_change_allowed'])
+            changed = {**manifest, "simulator_cache": "different-cache"}
+            (after / "manifest.json").write_text(json.dumps(changed))
+            with self.assertRaisesRegex(ValueError, "simulator_cache"):
+                compare_runs(before, after)
             manifest["case_indices"] = [0, 1]
             for output in (before, after):
                 (output / "manifest.json").write_text(json.dumps(manifest))
@@ -140,7 +152,7 @@ class EvaluationTests(unittest.TestCase):
                 split_path.write_text(json.dumps(split))
                 completed = subprocess.run([sys.executable, "run.py", "eval", "--split-file", str(split_path),
                     "--limit", "2", "--base-url", f"http://127.0.0.1:{server.server_port}/v1",
-                    "--output", str(output)], cwd=ROOT, capture_output=True, text=True, timeout=20)
+                    "--output", str(output)], cwd=ROOT, env={**os.environ, "CLINIC_LIVE_DIR": str(Path(tempfile.gettempdir()) / "clinic-test-live")}, capture_output=True, text=True, timeout=20)
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 records = [json.loads(line) for line in (output / "results.jsonl").read_text().splitlines()]
                 self.assertEqual([r["case_index"] for r in records], split["dev"])

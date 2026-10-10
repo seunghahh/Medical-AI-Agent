@@ -216,6 +216,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(client.calls[0]["output_tokens"], 7)
             self.assertEqual(captured[0]["model"], "gpt-oss:20b")
             self.assertEqual(captured[0]["reasoning_effort"], "low")
+            self.assertEqual(captured[0]["response_format"], {"type": "json_object"})
         finally:
             server.shutdown()
             server.server_close()
@@ -252,6 +253,46 @@ class Tests(unittest.TestCase):
             complete({"content": "", "tool_calls": [{**call, "function": {"name": "assistant", "arguments": "not json"}}]})
         with self.assertRaisesRegex(ModelError, "Generation truncated"):
             complete(message, "length")
+
+    def test_malformed_final_is_logged_without_repair_or_reasoning(self):
+        for raw in ('{"action":"EXAM","text":"unterminated}',
+                    '{"action":"EXAM",}',
+                    '{"action":"EXAM","working_memory":{"hypotheses":[}',
+                    '{"ok":true} trailing text'):
+            with self.subTest(raw=raw):
+                body = {"choices": [{"finish_reason": "stop", "message": {
+                    "content": raw, "reasoning_content": "PRIVATE_REASONING"}}]}
+                client = ChatClient("http://localhost:11434/v1", "gpt-oss:20b")
+                with patch("clinic.client.urllib.request.urlopen", return_value=BytesIO(json.dumps(body).encode())):
+                    with self.assertRaisesRegex(ResponseFormatError, "line 1, column"):
+                        client.complete("Return JSON", {}, "doctor", time.monotonic() + 5)
+                error = client.calls[0]["format_error"]
+                self.assertEqual(error["raw_final"], raw)
+                self.assertEqual(error["line"], 1)
+                self.assertGreater(error["column"], 0)
+                self.assertNotIn("PRIVATE_REASONING", json.dumps(client.calls))
+
+    def test_one_missing_outer_brace_is_repaired_only_at_clean_stop(self):
+        raw = '{"action":"EXAM","text":"복부 촉진","working_memory":{"hypotheses":[]}'
+        for wrapped in (False, True):
+            with self.subTest(wrapped=wrapped):
+                message = {"content": raw, "reasoning_content": "PRIVATE_REASONING"}
+                if wrapped:
+                    message = {"content": "", "tool_calls": [{"type": "function",
+                        "function": {"name": "assistant", "arguments": raw}}]}
+                body = {"choices": [{"finish_reason": "stop", "message": message}]}
+                client = ChatClient("http://localhost:11434/v1", "gpt-oss:20b")
+                with patch("clinic.client.urllib.request.urlopen", return_value=BytesIO(json.dumps(body).encode())):
+                    reply = client.complete("Return JSON", {}, "doctor", time.monotonic() + 5)
+                self.assertEqual(reply, json.loads(raw + "}"))
+                self.assertIsNone(validate_action(reply, "preliminary"))
+                self.assertEqual(client.calls[0]["format_repair"]["raw_final"], raw)
+                self.assertNotIn("PRIVATE_REASONING", json.dumps(client.calls))
+        body["choices"][0]["finish_reason"] = "length"
+        with patch("clinic.client.urllib.request.urlopen", return_value=BytesIO(json.dumps(body).encode())):
+            with self.assertRaisesRegex(ModelError, "Generation truncated"):
+                client.complete("Return JSON", {}, "doctor", time.monotonic() + 5)
+        self.assertNotIn("format_repair", client.calls[-1])
 
     def test_format_error_reselects_but_endpoint_error_stops(self):
         client = ChatClient("http://localhost:11434/v1", "gpt-oss:20b")

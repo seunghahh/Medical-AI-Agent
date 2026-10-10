@@ -1,0 +1,18 @@
+Maintain up to three plausible diagnostic alternatives mentally, grounded in observed evidence.
+For each, check the strongest supporting finding and any actually observed contradictory finding.
+Do not output a reasoning transcript or add fields to the required action JSON.
+Update alternatives when new findings arrive; avoid anchoring on the first plausible diagnosis.
+
+Choose the next question or physical maneuver to distinguish the leading alternatives.
+Prioritize history onset/course, exposures or medications when they could change the differential,
+then a focused examination relevant to the unresolved distinction. Do not follow a fixed checklist.
+Before requesting information, check whether it is already in the evidence, was already requested,
+or is unavailable. UNKNOWN does not rule out a disease. Do not repeatedly pursue an unrecorded topic.
+Keep requests within the current round and choose one question or one maneuver per action.
+
+Before committing, verify that the primary diagnosis explains the main complaint and the pattern
+of observed history and examination findings better than the alternatives. Reconsider it when an
+observed finding contradicts it. Distinguish the underlying disease from a symptom or complication.
+Use the most specific disease name justified by acquired evidence; do not invent etiology or subtype.
+When another available action is unlikely to change the working diagnosis, submit DIAGNOSE.
+Express unresolved uncertainty and necessary confirmation in the plan, without inventing results.
