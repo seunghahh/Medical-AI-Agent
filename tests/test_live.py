@@ -65,6 +65,9 @@ class LiveTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
         try:
+            with urlopen(base+'/motion.mjs') as response:
+                self.assertIn('javascript', response.headers['Content-Type'])
+                self.assertIn(b'export class ClinicMotion', response.read())
             with patch('clinic.live.snapshot', return_value={'run_id':None,'events':[]}):
                 self.assertEqual(json.load(urlopen(base+'/api/events'))['events'], [])
             for path, code in [('/../run.py',404),('/outputs/.live/latest.json',404),('/api/events?after=no',400)]:

@@ -483,30 +483,6 @@ footer {
   border-color: #e5f1db;
   box-shadow: 0 0 0 2px #33786144;
 }
-.scene-label:nth-child(1) {
-  left: 27.1%;
-  top: 51%;
-}
-.scene-label:nth-child(2) {
-  left: 70.3%;
-  top: 53%;
-}
-.scene-label:nth-child(3) {
-  left: 15%;
-  top: 86%;
-}
-.scene-label:nth-child(4) {
-  left: 47.1%;
-  top: 62%;
-}
-.scene-label:nth-child(5) {
-  left: 57.8%;
-  top: 76%;
-}
-.scene-label:nth-child(6) {
-  left: 85.1%;
-  top: 68%;
-}
 .scene-stage {
   position: absolute;
   top: 3.5%;

@@ -89,6 +89,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 assets = {'/': ('index.html', 'text/html; charset=utf-8'),
                           '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+                          '/motion.mjs': ('motion.mjs', 'text/javascript; charset=utf-8'),
                           '/style.css': ('style.css', 'text/css; charset=utf-8'),
                           '/room.jpg': ('room.jpg', 'image/jpeg'),
                           '/sprites.png': ('sprites.png', 'image/png')}

@@ -16,3 +16,7 @@ graphify-out/
 *.safetensors
 *.pt
 *.pth
+
+.playwright-cli/
+
+output/playwright/

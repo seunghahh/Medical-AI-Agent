@@ -1,4 +1,5 @@
-"use strict";
+import { ClinicMotion } from "/motion.mjs";
+("use strict");
 const $ = (id) => document.getElementById(id);
 const names = [
   "의사",
@@ -8,14 +9,7 @@ const names = [
   "진단 검토",
   "진단 평가",
 ];
-const positions = [
-  [104, 111],
-  [270, 115],
-  [48, 183],
-  [181, 135],
-  [222, 172],
-  [327, 151],
-];
+const motion = new ClinicMotion();
 const roles = names.map((name, i) => {
   const el = document.createElement("div");
   el.className = "role";
@@ -114,6 +108,7 @@ function add(e, who, message, kind = "", evidence = null, details = null) {
   if (follow) $("feed").scrollTop = $("feed").scrollHeight;
 }
 function receive(e) {
+  motion.handle(e, catchingUp || reduced.matches);
   if (e.case_index !== undefined) caseIndex = e.case_index;
   if (e.turn !== undefined) $("turn").textContent = `${e.turn} TURN`;
   switch (e.type) {
@@ -360,11 +355,24 @@ sprites.onload = () => {
     }
 };
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+let lastFrame;
 function draw(now) {
+  motion.step(
+    lastFrame === undefined ? 0 : (now - lastFrame) / 1000,
+    reduced.matches,
+  );
+  lastFrame = now;
+  const positions = motion.positions;
   ctx.setTransform(2, 0, 0, 2, 0, 0);
   ctx.imageSmoothingEnabled = false;
   if (room.complete && room.naturalWidth) ctx.drawImage(room, 0, 0, 384, 256);
   positions.forEach(([x, y], i) => {
+    const walking = motion.routes[i].length > 0;
+    sceneLabels[i].style.left =
+      (i === 2 ? 15 : ((x - (i === 1 ? 12 : 0)) / 384) * 100) + "%";
+    sceneLabels[i].style.top = (i === 2 ? 86 : ((y + 19) / 256) * 100) + "%";
+    sceneLabels[i].classList.toggle("walking", walking);
+    sceneLabels[i].title = walking ? names[i] + " · 이동 중" : names[i];
     if (i === active) {
       ctx.fillStyle = "#ecffe788";
       ctx.fillRect(x - 12, y + 13, 24, 5);
@@ -373,8 +381,7 @@ function draw(now) {
     }
     if (i === 2) return;
     const col = { 0: 0, 1: 1, 3: 4, 4: 2, 5: 3 }[i];
-    const pose =
-      !reduced.matches && busy && i === active ? Math.floor(now / 500) % 2 : 0;
+    const pose = !reduced.matches && walking ? Math.floor(now / 220) % 2 : 0;
     const b = boxes[pose * 5 + col];
     if (b) {
       const h = i === 3 ? 31 : 35,
@@ -386,18 +393,25 @@ function draw(now) {
         b.w,
         b.h,
         Math.round(x - w / 2),
-        y + 16 - h,
+        Math.round(
+          y +
+            16 -
+            h -
+            (walking && !reduced.matches ? Math.sin(now / 90) * 0.8 : 0),
+        ),
         Math.round(w),
         h,
       );
     }
   });
   if (!reduced.matches) {
-    if (!transfer && transfers.length)
-      transfer = { ...transfers.shift(), start: now };
+    if (!transfer && transfers.length) {
+      const next = transfers.shift();
+      transfer = { ...next, origin: [...positions[next.from]], start: now };
+    }
     if (transfer) {
       const t = Math.min(1, (now - transfer.start) / 1050),
-        a = positions[transfer.from],
+        a = transfer.origin,
         b = positions[transfer.to];
       const x = a[0] + (b[0] - a[0]) * t,
         y = a[1] + (b[1] - a[1]) * t - 18 * Math.sin(Math.PI * t);
