@@ -1,4 +1,4 @@
-# Medical AI Agent · NOVA Live Clinic
+# Medical AI Agent
 
 A local medical diagnostic agent built with **LangGraph**, **Ollama / gpt-oss:20b**, and public **AgentClinic MedQA_Ext** cases. A pixel hospital displays the actual CLI workflow: questions, recorded responses, memory updates, diagnosis review, and post-encounter evaluation.
 
@@ -24,12 +24,6 @@ python run.py run --engine langgraph \
   --start-index 3 --limit 1 --verbose \
   --working-memory --diagnosis-review --judge-mode llm
 ```
-
-`run` starts the localhost monitor and opens a browser at **http://127.0.0.1:8767/**. Add `--no-browser` to disable automatic startup/opening; `python run.py serve` opens the monitor server separately. The page observes events without controlling or blocking inference; updates appear after actions and responses finish, rather than token by token.
-
-- `--start-index`: zero-based case index; `--limit`: number of consecutive cases.
-- Default `--round preliminary`: `SAY`, `EXAM`, and `DIAGNOSE`. `--round final` also enables `TEST` for local practice.
-- `demo` runs a fixed script without a model; `run` performs real inference.
 
 ## How the agent works
 
