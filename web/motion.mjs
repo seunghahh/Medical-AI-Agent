@@ -46,6 +46,7 @@ export class ClinicMotion {
         this.move(1, stations.records, instant);
         break;
       case "review_start":
+      case "record_start":
         this.move(4, stations.review, instant);
         break;
       case "diagnosis":

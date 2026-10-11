@@ -3,17 +3,17 @@ import { ClinicMotion } from "/motion.mjs";
 const $ = (id) => document.getElementById(id);
 const names = [
   "의사",
-  "기록 조회",
-  "메모리",
+  "가상 환자·진찰",
+  "지침 RAG",
   "실행 검증",
-  "진단 검토",
-  "진단 평가",
+  "SOAP 작성",
+  "실행 결과",
 ];
 const motion = new ClinicMotion();
 const roles = names.map((name, i) => {
   const el = document.createElement("div");
   el.className = "role";
-  el.innerHTML = `<b>${String(i + 1).padStart(2, "0")}</b><span>${name}</span><small>${[2, 3].includes(i) ? "CODE" : "LLM"}</small>`;
+  el.innerHTML = `<b>${String(i + 1).padStart(2, "0")}</b><span>${name}</span><small>${i === 2 || i === 4 ? "LLM / CODE" : i === 3 ? "CODE" : "LLM"}</small>`;
   $("roles").append(el);
   return el;
 });
@@ -114,16 +114,16 @@ function receive(e) {
   switch (e.type) {
     case "run_start":
       $("model").textContent =
-        `${e.mode === "model" ? e.model : "SCRIPTED DEMO"} · ${e.engine}`;
+        `${e.mode === "model" ? e.model : e.mode === "replay" ? e.model + " REPLAY" : "SCRIPTED DEMO"} · ${e.engine}`;
       $("run").textContent = e.run_label || e.run_id;
-      roles[2].classList.toggle("disabled", !e.memory_enabled);
-      roles[4].classList.toggle("disabled", !e.review_enabled);
+      roles[2].classList.toggle("disabled", !e.rag_enabled);
+      roles[4].classList.toggle("disabled", false);
       roles[5].querySelector("small").textContent =
-        e.judge_mode === "llm" ? "LLM / RULE" : "RULE";
+        "LOG";
       stage(
         -1,
         "실행 연결됨",
-        `${e.case_indices.length}개 증례 · ${e.mode === "model" ? "실제 모델 실행" : "스크립트 데모"}`,
+        `${e.case_count || e.case_indices?.length || 0}개 증례 · ${e.mode === "model" ? "실제 모델 실행" : e.mode === "replay" ? "저장된 실행 로그 재생" : "스크립트 데모"}`,
       );
       break;
     case "case_start":
@@ -140,21 +140,29 @@ function receive(e) {
         true,
       );
       break;
+    case "rag_query":
+      stage(2, "지침 검색어 선택", "실제 관찰 문장을 선택하고 원문 일치를 검증합니다.", true);
+      break;
+    case "retrieval":
+      stage(2, "진료지침 검색 완료", `${e.hits.length}개 문서 · 환자 관찰과 구분합니다.`);
+      add(e, "지침 RAG", `검색어: ${e.query}\n` + e.hits.map(h => `${h.title}\n${h.organization || ""} · ${h.year || ""}\n${h.source_url || ""}\n${h.license || ""}`).join("\n\n"), "notice", null, e.hits);
+      break;
+    case "record_start":
+      stage(4, "초진 기록 작성", "예선 S/O는 관찰 원문에서, 진단 가설과 계획은 Doctor가 작성합니다.", true);
+      break;
     case "action":
       stage(
         3,
         "생성된 행동 검증",
-        "행동 형식, 반복 질문, 근거 ID를 확인합니다.",
+        "행동 형식, 글자 수와 예선 허용 행동을 확인합니다.",
       );
-      if (e.action?.action !== "DIAGNOSE")
-        add(
-          e,
-          "의사 · " + (e.action?.action || "INVALID"),
-          e.action?.text || text(e.action),
-        );
+      break;
+    case "question_memory_check":
+      stage(2, "질문 전 메모리 확인", e.question, true);
       break;
     case "resolving":
-      stage(1, "환자 기록에서 답변 확인", e.action.text, true);
+      stage(1, "가상 환자·진찰 응답 대기", e.action.text, true);
+      add(e, "의사 · " + e.action.action, e.action.text);
       break;
     case "observation":
       stage(
@@ -166,7 +174,7 @@ function receive(e) {
       );
       add(
         e,
-        "기록 조회 · 응답",
+        "환자·진찰 응답",
         e.evidence.length ? "" : "추가 관찰 없음",
         "answer",
         e.evidence,
@@ -178,6 +186,7 @@ function receive(e) {
         "작업 메모리 갱신",
         "관찰된 사실과 확인되지 않은 내용을 구분해 저장합니다.",
       );
+      add(e, "환자 메모리", `질문·답변 ${(e.memory.question_answers || []).length}개 저장` + (e.error ? ` · 가설 갱신 실패: ${e.error}` : ""), "notice", null, e.memory);
       break;
     case "rejected":
       stage(3, "행동을 다시 선택합니다", e.reason);
@@ -192,6 +201,9 @@ function receive(e) {
         "notice",
       );
       break;
+    case "draft_saved":
+      add(e, "진단 초안 저장", e.diagnosis, "notice");
+      break;
     case "review_end":
       add(
         e,
@@ -203,10 +215,10 @@ function receive(e) {
       );
       break;
     case "diagnosis":
-      stage(0, "최종 진단 제출", e.action.diagnosis);
+      stage(0, e.status === "provisional" ? "검토 미완료 · 임시 진단 제출" : "최종 진단 제출", e.action.diagnosis);
       add(
         e,
-        "의사 · 최종 진단",
+        e.status === "provisional" ? "의사 · 임시 진단 (검토 미완료)" : "의사 · 최종 진단",
         e.action.diagnosis + "\n근거: " + e.action.basis.join(", "),
         "result",
         null,
@@ -217,6 +229,9 @@ function receive(e) {
       if (e.error) {
         stage(3, "증례 실행 오류", e.error);
         add(e, "실행 오류", e.error, "notice");
+      }
+      else {
+        stage(5, e.completed ? "진료 완료" : "진료 미완료", "공식 채점 결과가 아닌 로컬 실행 결과입니다.");
       }
       break;
     case "evaluation_start":
@@ -249,7 +264,7 @@ function receive(e) {
             ? "CLI 실행이 중단되었어요"
             : "실행 오류로 종료",
         e.error ||
-          "증례별 진단·평가를 오른쪽에서 확인하세요. 다음 CLI 실행은 자동으로 연결됩니다.",
+          "질문·응답·RAG·SOAP를 오른쪽에서 확인하세요. 공식 채점은 수행하지 않았습니다.",
       );
       break;
   }

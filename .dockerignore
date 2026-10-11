@@ -1,0 +1,13 @@
+.git
+.github
+.cache
+results
+.env
+.env.*
+*.zip
+*.sqlite3
+__pycache__
+docs
+data-inventory.json
+original-source-hashes.json
+live-clinic.jpg
