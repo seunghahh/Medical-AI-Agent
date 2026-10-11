@@ -1,4 +1,4 @@
-# NOVA 예선 · 공개 벤치마크 + 진료지침 RAG
+# Medical-AI-Agent
 
 기존 `agentclinic-gpt-oss-toy/`, `nova-starter/`, `nova-devkit/`는 수정하지 않습니다. Python 3.10+ 표준 라이브러리만 사용합니다. 공식 SDK·로컬 시뮬레이터는 2026-10-11 공개 패키지로 갱신했고, starter 에이전트를 예선 실험용으로 확장했습니다.
 
