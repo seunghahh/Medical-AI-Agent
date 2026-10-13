@@ -36,6 +36,12 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(blocked[0]['field'], 'P.education')
         self.assertIn('시행 결과 아님', note['P']['tests'])
 
+    def test_native_numbers_before_se_are_counts_not_ages(self):
+        for text in ('하루에 두세 번 보고', '세 번 먹어요', '두세 개'):
+            self.assertEqual(normalize_measurements(text), text)
+        self.assertEqual(normalize_measurements('삼십이 세 여자'), '32세 여자')
+        self.assertEqual(normalize_measurements('서른두 살, 32세'), '32세, 32세')
+
     def test_number_normalization_is_not_case_specific(self):
         self.assertEqual(normalize_measurements('마흔두 살, 육십일 키로그람, 2.5 kg'), '42세, 61kg, 2.5kg')
         self.assertEqual(normalize_measurements('지난 살, 여러 키로'), '지난 살, 여러 키로')

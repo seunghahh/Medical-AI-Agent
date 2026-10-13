@@ -43,6 +43,10 @@ def korean_number(word):
 def normalize_measurements(text):
     def replace(match):
         value, unit = match.groups()
+        # '세' is an age only after a digit or a Sino-Korean number (삼십이 세); after a native number it counts things
+        # ('두세 번' = two or three times, '세 개' = three), so leave those alone.
+        if unit == '세' and not value[0].isdigit() and any(c not in '일이삼사오육칠팔구십백천' for c in value):
+            return match.group()
         number = value if value[0].isdigit() else korean_number(value)
         return f'{number}{UNITS[unit]}' if number is not None else match.group()
     return MEASURE.sub(replace, unicodedata.normalize('NFC', text))
