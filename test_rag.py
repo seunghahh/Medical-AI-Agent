@@ -1,4 +1,5 @@
 """Retrieval behaviour on a tiny synthetic corpus (no guideline data or model needed)."""
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -84,6 +85,49 @@ class RagTests(unittest.TestCase):
                                               'thought': 'fatigable ptosis and diplopia'}], 3)
         self.assertEqual(with_thought['thought']['hit@3'], 1.0)
         self.assertEqual(with_thought['current']['hit@3'], 0.0)
+
+    def test_hit_text_is_reread_from_the_source_file(self):
+        hit = self.index.search('diplopia ptosis')[0]
+        source = (Path(self.tmp.name) / 'guidelines' / hit['path']).read_text(encoding='utf-8')
+        self.assertIn('Diplopia and ptosis', hit['text'])
+        self.assertIn(hit['text'], source)
+        self.assertNotIn('title:', hit['text'])  # front matter is not part of the chunk
+
+
+class IndexFallbackTests(unittest.TestCase):
+    def corpus(self, tmp):
+        root = Path(tmp) / 'guidelines'
+        (root / 'source').mkdir(parents=True)
+        (root / 'source' / 'a.md').write_text(DOCS['myasthenia'], encoding='utf-8')
+        return root
+
+    def test_small_disk_builds_in_memory_and_leaves_no_file(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cache = self.corpus(tmp), Path(tmp) / 'cache'
+            with patch('rag.shutil.disk_usage', return_value=shutil._ntuple_diskusage(10, 10, 0)):
+                index = GuidelineIndex(root, cache)
+            self.assertEqual(index.search('diplopia')[0]['title'], 'Myasthenia gravis')
+            self.assertIsNone(index.path)
+            self.assertEqual(list(cache.glob('*')), [])
+            index.close()
+
+    def test_disk_full_during_build_falls_back_to_memory(self):
+        from unittest.mock import patch
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cache = self.corpus(tmp), Path(tmp) / 'cache'
+            with patch.object(GuidelineIndex, '_build_file', side_effect=sqlite3.OperationalError('database or disk is full')):
+                index = GuidelineIndex(root, cache)
+            self.assertEqual(index.search('ptosis')[0]['title'], 'Myasthenia gravis')
+            index.close()
+
+    def test_prepare_survives_an_index_failure(self):
+        from unittest.mock import patch
+        import run
+        with tempfile.TemporaryDirectory() as tmp, patch('rag.GuidelineIndex', side_effect=OSError('disk full')),                 patch.dict('os.environ', {'NOVA_GUIDELINES_DIR': tmp}):
+            state = run.prepare()
+        self.assertIsNone(state['rag'])
 
 
 if __name__ == '__main__':

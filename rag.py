@@ -3,13 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import re
 import sqlite3
 import tempfile
 import time
 
-VERSION = 'fts5-chunks-v2'
+VERSION = 'fts5-chunks-v3'
 STOP = set('the and for with from that this have has was were are not you your patient doctor medical information guideline guidelines diagnosis treatment what when where how initial opening vital signs none unknown'.split())
 # Common Korean particles/endings; stripped from the end of a query word so '목이' can find '목'.
 PARTICLES = ('에서', '으로', '입니다', '이다', '해요', '어요', '아요', '이', '가', '은', '는', '을', '를', '에', '의', '도', '와', '과', '로')
@@ -128,41 +129,86 @@ class GuidelineIndex:
         local = Path(__file__).resolve().parent
         default_cache = (local / '.cache' if self.root == local.parent / 'guidelines'
                          else Path(tempfile.gettempdir()) / 'nova-guideline-index')
-        cache = (Path(cache_dir) if cache_dir else default_cache).resolve()
-        cache.mkdir(parents=True, exist_ok=True)
-        self.path = cache / f'{self.fingerprint}.sqlite3'
-        if not self.path.exists():
-            self._build(files)
-        self.db = sqlite3.connect(f'{self.path.as_uri()}?mode=ro', uri=True)
+        self.path = None
+        self.db = None
+        try:
+            cache = (Path(cache_dir) if cache_dir else default_cache).resolve()
+            cache.mkdir(parents=True, exist_ok=True)
+            self.path = cache / f'{self.fingerprint}.sqlite3'
+            if self.path.exists():
+                self.db = sqlite3.connect(f'{self.path.as_uri()}?mode=ro', uri=True)
+            elif shutil.disk_usage(cache).free > self._estimate(files) * 1.5:
+                self._build_file(files)
+        except (OSError, sqlite3.Error):
+            # Read-only or nearly full disk (a container's temp dir can be small): fall back to memory below.
+            self._discard()
+        if self.db is None:
+            # Each competition case starts a fresh container, so a disk cache would never be reused anyway.
+            self.path = None
+            self.db = self._populate(sqlite3.connect(':memory:'), files)
         self.info = dict(self.db.execute('SELECT key, value FROM info'))
 
-    def _build(self, files):
-        started = time.monotonic()
+    @staticmethod
+    def _estimate(files):
+        """Rough index size in bytes: measured at about 0.6 of the source text (373 MB for the 614 MB corpus)."""
+        return sum(p.stat().st_size for p in files) * 7 // 10
+
+    def _discard(self):
+        if self.db is not None:
+            self.db.close()
+            self.db = None
+        if self.path is not None:
+            for leftover in self.path.parent.glob(self.path.name + '*.tmp'):
+                leftover.unlink(missing_ok=True)
+
+    def _build_file(self, files):
         temporary = self.path.with_name(self.path.name + f'.{os.getpid()}.tmp')
         con = sqlite3.connect(temporary)
         try:
-            con.execute('PRAGMA journal_mode=OFF')
-            con.execute('CREATE VIRTUAL TABLE chunks USING fts5(title, heading, body, path UNINDEXED, metadata UNINDEXED, offset UNINDEXED)')
-            con.execute("CREATE VIRTUAL TABLE vocab USING fts5vocab(chunks, 'row')")
-            con.execute('CREATE TABLE info (key TEXT PRIMARY KEY, value TEXT)')
-            count = 0
-            for path in files:
-                meta, body = metadata(path.read_text(encoding='utf-8'))
-                title = meta.get('title', path.stem)
-                for start, heading, chunk in chunk_sections(body):
-                    con.execute('INSERT INTO chunks VALUES (?, ?, ?, ?, ?, ?)',
-                                (title, heading, chunk, str(path.relative_to(self.root)), json.dumps(meta, ensure_ascii=False), start))
-                    count += 1
-            info = {'version': VERSION, 'documents': str(len(files)), 'chunks': str(count),
-                    'fingerprint': self.fingerprint, 'build_seconds': str(round(time.monotonic() - started, 2))}
-            con.executemany('INSERT INTO info VALUES (?, ?)', info.items())
-            con.commit()
-            con.close()
+            self._populate(con, files).close()
             os.replace(temporary, self.path)
         except BaseException:
             con.close()
             temporary.unlink(missing_ok=True)
             raise
+        self.db = sqlite3.connect(f'{self.path.as_uri()}?mode=ro', uri=True)
+
+    def _populate(self, con, files):
+        """Index without storing the text: FTS5 is contentless (about a quarter of the size of also storing every chunk) and a
+        hit's text is re-read from its source file by (path, offset, length). Keep full detail: `detail=column` halves
+        the index again but drops term frequencies, which wrecks BM25 ranking."""
+        started = time.monotonic()
+        con.execute('PRAGMA journal_mode=OFF')
+        con.execute("CREATE VIRTUAL TABLE chunks USING fts5(title, heading, body, content='')")
+        con.execute("CREATE VIRTUAL TABLE vocab USING fts5vocab(chunks, 'row')")
+        con.execute('CREATE TABLE docs (id INTEGER PRIMARY KEY, path TEXT, title TEXT, metadata TEXT)')
+        con.execute('CREATE TABLE meta (id INTEGER PRIMARY KEY, doc INTEGER, offset INTEGER, length INTEGER, heading TEXT)')
+        con.execute('CREATE TABLE info (key TEXT PRIMARY KEY, value TEXT)')
+        count = 0
+        for doc, path in enumerate(files):
+            meta, body = metadata(path.read_text(encoding='utf-8'))
+            title = meta.get('title', path.stem)
+            con.execute('INSERT INTO docs VALUES (?, ?, ?, ?)',
+                        (doc, str(path.relative_to(self.root)), title, json.dumps(meta, ensure_ascii=False)))
+            for start, heading, chunk in chunk_sections(body):
+                count += 1
+                con.execute('INSERT INTO chunks(rowid, title, heading, body) VALUES (?, ?, ?, ?)', (count, title, heading, chunk))
+                con.execute('INSERT INTO meta VALUES (?, ?, ?, ?, ?)', (count, doc, start, len(chunk), heading))
+        info = {'version': VERSION, 'documents': str(len(files)), 'chunks': str(count),
+                'fingerprint': self.fingerprint, 'build_seconds': str(round(time.monotonic() - started, 2))}
+        con.executemany('INSERT INTO info VALUES (?, ?)', info.items())
+        con.commit()
+        return con
+
+    def _text(self, hit):
+        """Re-read a chunk's text from its source file (same front-matter split and offsets as when indexing)."""
+        _, body = metadata((self.root / hit['path']).read_text(encoding='utf-8'))
+        return body[hit['offset']:hit['offset'] + hit['length']]
+
+    def _with_text(self, hits):
+        for hit in hits:
+            hit['text'] = self._text(hit)
+        return hits
 
     def _frequency(self, token):
         """Rough document frequency of a query word (prefix match for Hangul, which carries particles)."""
@@ -175,11 +221,14 @@ class GuidelineIndex:
     def _rows(self, terms, joiner, pool, column=''):
         if not terms:
             return []
-        match = f' {joiner} '.join('"' + t + '"' + ('*' if re.fullmatch(r'[가-힣]+', t) else '') for t in terms)
+        quote = lambda t: '"' + t + '"' + ('*' if re.fullmatch(r'[가-힣]+', t) else '')
+        match = f' {joiner} '.join(quote(t) for t in terms)
         if column:
             match = f'{column} : ({match})'
-        return self.db.execute('SELECT title, body, path, metadata, offset, bm25(chunks, 5.0, 3.0, 1.0) AS score, heading '
-                               'FROM chunks WHERE chunks MATCH ? ORDER BY score LIMIT ?', (match, pool)).fetchall()
+        return self.db.execute(
+            'SELECT d.title, d.path, d.metadata, m.offset, m.length, bm25(chunks, 5.0, 3.0, 1.0) AS score, m.heading '
+            'FROM chunks JOIN meta m ON m.id = chunks.rowid JOIN docs d ON d.id = m.doc '
+            'WHERE chunks MATCH ? ORDER BY score LIMIT ?', (match, pool)).fetchall()
 
     def search(self, query, limit=3, extra=(), strict=True, expand=True, thought=''):
         """Best `limit` distinct documents. With a `thought` (the model's own reasoning about likely diseases and the
@@ -188,7 +237,7 @@ class GuidelineIndex:
         base = self._search_query(query, limit * 3 if thought else limit, extra, strict, expand)
         terms = self._thought_terms(thought) if thought else []
         if not terms:
-            return base[:limit]
+            return self._with_text(base[:limit])
         scores, best = {}, {}
         # A disease named in a document's title marks it as that disease's page, so title matches get their own ranking.
         titled = self._hits(self._rows(self._thought_terms(thought, keep=40, share=0.02), 'OR', limit * 15, column='title'), limit * 3)
@@ -199,7 +248,7 @@ class GuidelineIndex:
             for rank, hit in enumerate(hits):
                 scores[hit['path']] = scores.get(hit['path'], 0) + weight / (60 + rank)
                 best.setdefault(hit['path'], hit)
-        return [best[path] for path in sorted(scores, key=scores.get, reverse=True)[:limit]]
+        return self._with_text([best[path] for path in sorted(scores, key=scores.get, reverse=True)[:limit]])
 
     def _thought_terms(self, thought, keep=12, share=0.2):
         """Distinctive words of a long reasoning text: drop words that occur in most chunks (they cannot discriminate)
@@ -210,10 +259,10 @@ class GuidelineIndex:
 
     def _hits(self, rows, limit):
         hits, seen = [], set()
-        for title, body, path, meta, offset, score, heading in rows:
+        for title, path, meta, offset, length, score, heading in rows:
             if path not in seen:
                 seen.add(path)
-                hits.append({'title': title, 'text': body, 'path': path, 'offset': int(offset), 'heading': heading,
+                hits.append({'title': title, 'path': path, 'offset': int(offset), 'length': int(length), 'heading': heading,
                              'score': score, **json.loads(meta)})
                 if len(hits) == limit:
                     break

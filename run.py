@@ -69,10 +69,14 @@ def prepare():
     # model_dir = os.environ['NOVA_MODEL_DIR']
     # return YourModel.load(model_dir, local_files_only=True)
     from rag import GuidelineIndex, guideline_root
-    root = guideline_root()
-    index = GuidelineIndex(root) if root.is_dir() else None
-    if index is None:
-        print(f'[RAG] 지침 폴더 없음: {root}; RAG 없이 실행', file=sys.stderr)
+    index = None
+    try:
+        root = guideline_root()
+        index = GuidelineIndex(root) if root.is_dir() else None
+        if index is None:
+            print(f'[RAG] 지침 폴더 없음: {root}; RAG 없이 실행', file=sys.stderr)
+    except Exception as exc:  # a failed index must not cost the whole case: consult() works without RAG
+        print(f'[RAG] 색인 실패({type(exc).__name__}: {exc}); RAG 없이 실행', file=sys.stderr)
     return {'max_turns': MAX_TURNS, 'rag': index, 'retrievals': []}
 
 
