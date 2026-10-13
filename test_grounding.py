@@ -71,6 +71,29 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(queries[1], 'Patient: I have fatigue.')
         self.assertTrue(all(entry['fallback'] for entry in state['retrievals']))
 
+    def test_model_search_terms_only_widen_the_search(self):
+        calls = []
+        state = {'rag': SimpleNamespace(search=lambda query, **options: calls.append((query, options)) or [])}
+        reply = ('{"selections":[],"thought":" Weight loss with tachycardia suggests\\n hyperthyroidism. ",'
+                 '"terms":["hyperthyroidism"," goiter ",7,"hyperthyroidism",""]}')
+        with patch.object(run, 'ask_doctor', return_value=reply):
+            run.retrieve(None, self.session, [], state)
+        query, options = calls[0]
+        self.assertEqual(options['extra'], ['hyperthyroidism', 'goiter'])
+        self.assertEqual(options['thought'], 'Weight loss with tachycardia suggests hyperthyroidism.')
+        self.assertNotIn('hyperthyroidism', query)
+        logged = state['retrievals'][-1]
+        self.assertEqual((logged['terms'], logged['thought']), (options['extra'], options['thought']))
+        self.assertEqual(run.search_terms('not a list'), [])
+        self.assertEqual((run.search_thought(None), len(run.search_thought('x ' * 900))), ('', 800))
+
+    def test_plain_search_call_when_model_gives_no_thought_or_terms(self):
+        calls = []
+        state = {'rag': SimpleNamespace(search=lambda query, **options: calls.append(options) or [])}
+        with patch.object(run, 'ask_doctor', return_value='{"selections":[]}'):
+            run.retrieve(None, self.session, [], state)
+        self.assertEqual(calls, [{}])
+
     def test_differentials_require_real_source_ids(self):
         note, _, _ = finalize({'diagnosis': '가설', 'differential': [
             {'name': '정상 식욕', 'source_ids': ['missing']},

@@ -196,7 +196,7 @@ class RetrievalTests(unittest.TestCase):
     def test_korean_compound_search(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'guidelines'; (root / 'source').mkdir(parents=True)
-            (root / 'source/doc.md').write_text('---\ntitle: "갑상선기능항진증"\n---\n치료 지침')
+            (root / 'source/doc.md').write_text('---\ntitle: "갑상선기능항진증"\n---\n치료 지침', encoding='utf-8')
             index = GuidelineIndex(root, Path(tmp) / 'cache')
             self.assertEqual(index.search('갑상선 기능 항진')[0]['title'], '갑상선기능항진증')
             index.close()

@@ -194,6 +194,19 @@ def consult(client, model):
     return with_retry(client.diagnose, note=note, diagnosis=diagnosis, request_id=str(uuid.uuid4()))
 
 
+def search_terms(value):
+    """Model-suggested search words: short strings only, at most 8, no duplicates."""
+    if not isinstance(value, list):
+        return []
+    terms = (' '.join(v.split()) for v in value if isinstance(v, str))
+    return list(dict.fromkeys(t for t in terms if 0 < len(t) <= 40))[:8]
+
+
+def search_thought(value, limit=800):
+    """The model's reasoning about which knowledge it needs, used as a retrieval query (Thought-RAG)."""
+    return ' '.join(value.split())[:limit] if isinstance(value, str) else ''
+
+
 def retrieve(client, session, transcript, state, preliminary=True):
     if not state or not state.get('rag'):
         return ''
@@ -207,7 +220,12 @@ def retrieve(client, session, transcript, state, preliminary=True):
             '지침 검색어로 쓸 실제 관찰 문장을 최대 8개 고르세요. 번역/요약/해석/진단 추론은 금지입니다. '
             '주호소와 구체적 증상을 우선하고 이름/인사/짧은 동의는 제외하세요. '
             'quote는 선택한 value 전체를 한 글자도 바꾸지 말고 복사하세요. '
-            'JSON {"selections":[{"source_id":"제공된 id", "quote":"value 원문 전체"}]}',
+            '별도로 thought에는 지금까지의 관찰로 의심되는 질환 후보와, 그것을 확인·감별하는 데 필요한 의학 지식'
+            '(진단 기준, 감별점, 병태생리)을 영어 의학 용어를 섞어 3~5문장으로 추론하세요. '
+            'terms에는 문헌 검색용 의학 용어를 최대 8개 적으세요. '
+            'thought와 terms는 문헌 검색에만 쓰이고 환자 기록에 들어가지 않으며 확정 진단이 아닙니다. '
+            'JSON {"selections":[{"source_id":"제공된 id", "quote":"value 원문 전체"}], '
+            '"thought":"reasoning", "terms":["medical term"]}',
             json.dumps(catalog, ensure_ascii=False), 2048)) or {}
     except NovaError:
         selection = {}
@@ -216,9 +234,12 @@ def retrieve(client, session, transcript, state, preliminary=True):
     if fallback:
         accepted = [{'source_id': i['id'], 'quote': i['value']} for i in catalog if i['kind'] == 'opening'][:8]
     query = '\n'.join(dict.fromkeys(i['quote'] for i in accepted))
-    hits = state['rag'].search(query)
+    terms, thought = search_terms(selection.get('terms')), search_thought(selection.get('thought'))
+    # Terms and thought only steer the guideline search; they are never copied into the record.
+    options = {**({'extra': terms} if terms else {}), **({'thought': thought} if thought else {})}
+    hits = state['rag'].search(query, **options)
     # Logs contain source metadata, never a redistributed copy of guideline text.
-    state.setdefault('retrievals', []).append({'query': query, 'sources': accepted, 'rejected': rejected,
+    state.setdefault('retrievals', []).append({'query': query, 'terms': terms, 'thought': thought, 'sources': accepted, 'rejected': rejected,
                                              'fallback': fallback, 'hits': [
         {k: v for k, v in h.items() if k != 'text'} for h in hits]})
     if state.get('observer'):
