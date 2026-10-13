@@ -125,6 +125,11 @@ class GroundingTests(unittest.TestCase):
         self.assertIn('식욕이 좋아졌어요', note['S']['ros'])
         self.assertNotIn('질문/요청', json.dumps(note, ensure_ascii=False))
 
+    def test_internal_ids_in_plans_are_shown_as_citations(self):
+        note, _, _ = finalize({'diagnosis': '가설', 'P': {'tests': 'TSH 검사(근거: turn2, vitals, opening.s1, turn12)'}}, self.items)
+        self.assertIn('(근거: T2, 활력징후, 첫 진술, T12)', note['P']['tests'])
+        self.assertNotIn('turn2', note['P']['tests'])
+
     def test_unusable_model_parts_fall_back_to_the_plain_observations(self):
         candidate = {'diagnosis': '가설', 'cc': ['opening.s9'], 'hpi': {'text': '체중 14kg 감소', 'source_ids': ['turn1']},
                      'evidence': [{'text': '해석', 'source_ids': []}], 'differential': 'oops'}

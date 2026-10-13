@@ -103,6 +103,13 @@ def label(source_id):
     return '첫 진술' if base == 'opening' else '활력징후' if base == 'vitals' else 'T' + base[4:] if base.startswith('turn') else base
 
 
+def readable_ids(text):
+    """Models sometimes write internal ids into plans ('근거: turn2, vitals'); show them as the record's citations."""
+    text = re.sub(r'\bturn(\d+)\b', r'T\1', text)
+    text = re.sub(r'\bopening(?:\.s\d+)?\b', '첫 진술', text)
+    return re.sub(r'\bvitals\b', '활력징후', text)
+
+
 def cite(ids):
     return ', '.join(dict.fromkeys(label(i) for i in ids))
 
@@ -270,7 +277,7 @@ def finalize(candidate, items):
             if reason:
                 blocked.append({'field': 'P.' + field, 'reason': reason, 'rejected': value})
             elif value.strip():
-                note['P'][field] = '[계획/제안, 시행 결과 아님] ' + value.strip()
+                note['P'][field] = '[계획/제안, 시행 결과 아님] ' + readable_ids(value.strip())
     return note, diagnosis, blocked
 
 

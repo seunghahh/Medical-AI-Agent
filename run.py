@@ -80,7 +80,7 @@ JSON 하나만:
  "differential":[{"name":"감별진단 이름", "reason":"왜 가능성이 낮거나 높은지와 구분하는 검사 한 문장", "source_ids":["turn2"]}],
  "P":{"tests":"추가 검사 계획", "treatment":"치료 계획", "disposition":"외래/입원/응급 등 처치 결정", "follow_up":"구체적 추적 시점과 항목", "education":"교육 계획"}}
 evidence는 3~6개, differential은 3~5개(각각 reason 포함). 확인하지 않은 정상/음성 단정은 금지입니다.
-P는 앞으로 제안하는 조치만 쓰며 환자 병력이나 이미 시행한 치료/검사처럼 쓰지 마세요."""
+P는 앞으로 제안하는 조치만 쓰며 환자 병력이나 이미 시행한 치료/검사처럼 쓰지 마세요. P에는 출처 ID를 쓰지 마세요."""
 
 
 def prepare():
