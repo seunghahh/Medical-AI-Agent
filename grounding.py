@@ -48,6 +48,14 @@ def normalize_measurements(text):
     return MEASURE.sub(replace, unicodedata.normalize('NFC', text))
 
 
+ASKS = re.compile(r'나요|습니까|세요|한가요|알려|말씀해|말해')
+
+
+def asks(content):
+    """True when a doctor line reads as a question, so the patient's reply is kept as an observation."""
+    return '?' in content or bool(ASKS.search(content))
+
+
 def sources(session, transcript):
     initial = session['initial']
     items = [{'id': 'opening', 'kind': 'opening', 'question': '', 'raw': initial['opening']},
@@ -59,7 +67,7 @@ def sources(session, transcript):
             question = match.groups()
         elif line.startswith('환자: ') and question:
             turn, content = question
-            asked = '?' in content or bool(re.search(r'나요|습니까|세요|한가요|알려|말씀해|말해', content))
+            asked = asks(content)
             consent = re.search(r'검사|치료|처방|의뢰|복용', content) and re.search(
                 r'할까요|하시겠|하실래|하겠습니다|진행|요청|추가|검사\?$', content)
             # shortcut: Intent uses wording patterns; keep Q/A provenance for ambiguous questions.

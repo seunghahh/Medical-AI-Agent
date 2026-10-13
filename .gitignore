@@ -24,7 +24,7 @@ credentials*.json
 secrets*.json
 
 # Generated packages, model weights and environments
-/submission.zip
+/submission*.zip
 *.zip
 *.gguf
 *.safetensors

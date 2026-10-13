@@ -36,6 +36,7 @@ def simulator(replies=()):
     return BenchmarkSimulator(case(), doctor=Endpoint(), sim=Endpoint(replies), minutes=20)
 
 
+@patch.object(run, 'EXPLAIN_TURNS', 0)  # these scripted tests cover other behaviour; the closing explanation has its own tests
 class ContractTests(unittest.TestCase):
     def test_manual_sample_commands(self):
         from develop import manual

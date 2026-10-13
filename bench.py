@@ -181,7 +181,8 @@ def main():
     execute_parser.add_argument('--no-browser', action='store_true', help='Do not auto-start/open monitor; still write events')
     search = sub.add_parser('search', help='Build/reuse offline guideline index and show source metadata')
     search.add_argument('query')
-    sub.add_parser('package', help='Build submission.zip from a fixed allowlist, excluding datasets, keys and outputs')
+    package = sub.add_parser('package', help='Build submission.zip from a fixed allowlist, excluding datasets, keys and outputs')
+    package.add_argument('--no-rag', action='store_true', help='Comparison build submission-no-rag.zip: same code, retrieval switched off')
     args = parser.parse_args()
     if args.command == 'check':
         result = inventory(args.data_root)
@@ -196,10 +197,13 @@ def main():
             index.close()
     elif args.command == 'package':
         names = ['run.py', 'rag.py', 'grounding.py', 'nova_sdk.py', 'requirements.txt', 'SOURCES.md']
-        with zipfile.ZipFile(ROOT / 'submission.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+        target = ROOT / ('submission-no-rag.zip' if args.no_rag else 'submission.zip')
+        with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as z:
             for name in names:
                 z.write(ROOT / name, name)
-        print(ROOT / 'submission.zip')
+            if args.no_rag:  # run.py skips retrieval when this marker sits next to it
+                z.writestr('NO_RAG', 'retrieval disabled for an A/B comparison\n')
+        print(target)
     else:
         if args.offset < 0 or args.limit < 1 or not 3 < args.minutes <= 30:
             parser.error('--offset >= 0, --limit >= 1, 3 < --minutes <= 30 are required')
