@@ -83,6 +83,29 @@ class FlowTests(unittest.TestCase):
         covered = messages('가능성이 있어요.', '심해지면 응급실에 가야 해요.')
         self.assertEqual(covered, ['가능성이 있어요.', '심해지면 응급실에 가야 해요.'])
 
+    def test_too_long_empathy_plus_question_is_cut_to_the_question(self):
+        self.assertEqual(run.fit_to_limit('잠을 못 주무셔서 많이 힘드셨겠어요. 언제부터 잠들기 어려우셨나요?'), '언제부터 잠들기 어려우셨나요?')
+        self.assertEqual(run.fit_to_limit('x' * 45), '')
+        sim = simulator(); sim.doctor = Endpoint([say('잠을 못 주무셔서 많이 힘드셨겠어요. 언제부터 잠들기 어려우셨나요?')])
+        self.assertEqual(run.next_step(LocalClient(sim), sim.public_session(), [], 20), ('SAY', '언제부터 잠들기 어려우셨나요?'))
+
+    def test_a_visit_does_not_end_without_a_single_question(self):
+        garbage = [{'oops': 1}] * 3                      # next_step gives up: no action in the right format
+        replies = [*garbage, {'action': 'DONE'}, {'action': 'DONE'}, {'action': 'DONE'}, EXPLANATION, NOTE]
+        sim, spoken = run_consult(replies, max_turns=12)
+        self.assertEqual(spoken[0], run.FIRST_QUESTION)
+        self.assertEqual(spoken[1:], EXPLANATION['messages'])
+        self.assertEqual(sim.turns, 4)
+
+    def test_children_are_not_asked_about_smoking_drinking_or_work(self):
+        session = {'initial': {'opening': '이름은 김도현이고, 여섯 살 남자아이이다.', 'vital_signs': ''}}
+        self.assertEqual(run.patient_age(session), 6)
+        self.assertEqual(run.patient_age({'initial': {'opening': '저는 예순두 살 여자이다.'}}), 62)
+        self.assertIsNone(run.patient_age({'initial': {'opening': '배가 아파요'}}))
+        self.assertNotIn('사회력', run.missing_topics([], age=6))
+        self.assertIn('사회력', run.missing_topics([], age=40))
+        self.assertIn('사회력', run.missing_topics([]))              # unknown age: ask
+
     def test_patient_replies_to_the_explanation_are_not_observations(self):
         session = {'initial': {'opening': '배가 아파요', 'vital_signs': '미제공'}}
         transcript = []

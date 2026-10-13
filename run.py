@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from nova_sdk import RECORD_FIELDS, NovaError, empty_record, run_agent
-from grounding import sources, finalize, retrieval_sources, query_spans, asks, record_sources
+from grounding import sources, finalize, retrieval_sources, query_spans, asks, record_sources, normalize_measurements
 
 MAX_TURNS = 50
 TIME_MARGIN = 180   # 세션 마감 3분 전부터는 기록 작성으로 넘어갑니다(초)
@@ -31,6 +31,11 @@ COVERAGE = (('과거력', r'과거|병력|앓|수술|입원|지병|만성|기저
             ('복용 약·알레르기', r'약|복용|알레르기|알러지'),
             ('가족력', r'가족|부모|형제|유전|집안'),
             ('사회력', r'흡연|담배|음주|(?<!수)술[을은이도 ]|직업|생활 ?습관'))
+CHILD_AGE = 14      # 이 나이 미만이면 흡연·음주·직업 대신 출생력·발달·영양을 묻습니다
+# 모델이 형식에 맞는 행동을 세 번 연속 내지 못할 때 쓰는 고정 질문(진료가 아무것도 묻지 못하고 끝나는 일을 막음)
+FIRST_QUESTION = '증상이 언제부터 시작됐나요?'
+FALLBACK_QUESTIONS = {'과거력': '과거에 앓은 병이나 수술이 있나요?', '복용 약·알레르기': '복용 중인 약이나 알레르기가 있나요?',
+                      '가족력': '가족 중 비슷한 병이 있나요?', '사회력': '흡연이나 음주는 하시나요?'}
 FALLBACK_EXPLANATION = ('걱정 많으셨겠어요. 정리해 설명드릴게요.', '필요한 검사로 원인을 확인하겠습니다.',
                         '증상이 심해지면 바로 병원에 오셔야 해요.')
 STOP_CODES = {'TURN_LIMIT_REACHED', 'SESSION_EXPIRED', 'SESSION_CLOSED', 'RUN_NOT_ACTIVE'}
@@ -46,8 +51,10 @@ STEP_PROMPT = f"""당신은 외래 진료실의 의사입니다. 가상 환자�
 {{"action": "DONE"}}  진료를 마칠 때
 진행 순서: 주호소 → 현병력(시작 시점, 양상, 위치, 심해지거나 나아지는 요인, 동반 증상) → 과거력·복용 약·알레르기
 → 가족력 → 사회력(흡연, 음주, 직업) → 필요한 계통 문진 → 증상과 관련된 신체 진찰 2~3가지 → DONE.
+환자가 소아(만 14세 미만)이면 보호자에게 묻고, 흡연·음주·직업 대신 출생력, 발달, 영양, 성장 기록, 부모의 키와 사춘기 시기를 확인합니다.
+증상이 약물(수면제 등)과 관련되면 시작 시점, 용량 변화, 끊거나 줄였을 때의 증상, 여러 곳에서 처방받았는지를 확인합니다.
 환자에게 하는 진단·계획 설명은 DONE 뒤에 시스템이 따로 진행하므로 직접 하지 않아도 됩니다.
-첫 질문 앞에는 '많이 걱정되셨겠어요.'처럼 짧은 공감 한마디를 붙이고, 환자가 힘든 점을 말하면 짧게 공감합니다(그래도 30자 이내).
+첫 질문 앞에는 '많이 힘드셨겠어요.'처럼 짧은 공감 한마디를 붙이고, 환자가 힘든 점을 말하면 짧게 공감합니다. 공감과 질문을 합쳐 반드시 30자 이내여야 하며, 넘치면 공감을 줄이세요.
 질문은 한국어로 한 번에 하나만 하고(물음표는 하나), 이미 물은 것은 다시 묻지 않습니다. 진찰은 한 번에 동작 하나만 요청합니다.
 진찰 문장에 '~하고', '~보고'로 동작을 이어 붙이면 거절되어 턴만 쓰입니다. 좋은 예: "갑상선을 만져 크기를 확인하겠습니다". 나쁜 예: "목을 살펴보고 갑상선을 만져보겠습니다".
 예선이므로 TEST는 금지입니다. 검사 계획은 최종 P.tests에 적습니다.
@@ -148,6 +155,15 @@ def seconds_left(session):
     return datetime.fromisoformat(session['deadline']).timestamp() - time.time()
 
 
+def fit_to_limit(content):
+    """A SAY longer than the limit (usually empathy plus a question) is cut to its last sentence that fits, preferring a
+    question, so a good turn is not thrown away and the visit cannot end because every attempt was a few characters long."""
+    parts = [p.strip() for p in re.split(r'(?<=[.?!;])\s+', content) if p.strip()]
+    fitting = [p for p in parts if len(p) <= MAX_CHARS]
+    questions = [p for p in fitting if '?' in p]
+    return (questions or fitting or [''])[-1]
+
+
 def next_step(client, session, transcript, turns_left, references=''):
     """다음 행동 하나. 형식이 틀리면(빈 답, JSON 아님, 30자 초과) 바로 다시 묻고, 세 번 모두 틀리면 None."""
     request = situation(session, transcript) + f'\n\n남은 턴: {turns_left}'
@@ -165,6 +181,8 @@ def next_step(client, session, transcript, turns_left, references=''):
             # The patient answers one question at a time (the server replies "한 번에 하나씩" otherwise): send the first.
             first, _, held = content.partition('?')
             content, held = first.strip() + '?', held.strip()
+        if action == 'SAY' and len(content) > MAX_CHARS:
+            content = fit_to_limit(content)
         if action == 'DONE' or (action in ('SAY', 'EXAM') and 0 < len(content) <= MAX_CHARS):
             if held:
                 transcript.append(f'(알림: 질문은 한 번에 하나만 합니다. 보류한 질문: {held})')
@@ -173,10 +191,18 @@ def next_step(client, session, transcript, turns_left, references=''):
     return None
 
 
-def missing_topics(transcript):
-    """Required history topics the doctor has not asked about yet, plus 'physical exam' if none was done."""
+def patient_age(session):
+    """Age in years from the opening statement ('여섯 살', '62세'), or None if it is not stated."""
+    found = re.search(r'(\d+)\s*세', normalize_measurements(str(session.get('initial', {}).get('opening', ''))))
+    return int(found.group(1)) if found else None
+
+
+def missing_topics(transcript, age=None):
+    """Required history topics the doctor has not asked about yet, plus 'physical exam' if none was done.
+    Children are not asked about smoking, drinking or work."""
     asked = ' '.join(line for line in transcript if re.match(r'턴 \d+ 의사:', line))
-    missing = [name for name, pattern in COVERAGE if not re.search(pattern, asked)]
+    missing = [name for name, pattern in COVERAGE
+               if not re.search(pattern, asked) and not (name == '사회력' and age is not None and age < CHILD_AGE)]
     if not any(re.match(r'턴 \d+ 진찰\(', line) for line in transcript):
         missing.append('신체 진찰')
     return missing
@@ -231,7 +257,8 @@ def consult(client, model):
     limit = (model or {}).get('max_turns', MAX_TURNS)
     transcript, turns_left, refused = [], min(limit, MAX_TURNS, session['turns_remaining']), 0
     attempted = set()
-    references, retrieved_at, nudges = '', -1, 0
+    references, retrieved_at, nudges, fallbacks = '', -1, 0, 0
+    age = patient_age(session)
     reserve = min(EXPLAIN_TURNS, turns_left // 4)  # turns kept for the closing explanation
     while turns_left > reserve and seconds_left(session) > TIME_MARGIN and refused < 3:
         try:
@@ -241,9 +268,15 @@ def consult(client, model):
         except NovaError:
             break  # 호출 한도·계속된 장애: 지금까지의 기록으로 마무리합니다.
         if step is None:
-            break
+            # Three unusable answers in a row: ask a fixed question instead of ending a visit that may have asked nothing.
+            asked_any = any(re.match(r'턴 \d+ 의사:', line) for line in transcript)
+            topic = next((t for t in missing_topics(transcript, age) if t in FALLBACK_QUESTIONS), None)
+            if fallbacks >= 3 or (asked_any and topic is None):
+                break
+            fallbacks += 1
+            step = ('SAY', FALLBACK_QUESTIONS[topic] if asked_any else FIRST_QUESTION)
         if step[0] == 'DONE':
-            missing = missing_topics(transcript)
+            missing = missing_topics(transcript, age)
             if missing and nudges < MAX_NUDGES and turns_left > reserve + len(missing):
                 nudges += 1
                 transcript.append(f"(알림: 진료를 마치기 전에 확인할 항목: {', '.join(missing)}.)")
