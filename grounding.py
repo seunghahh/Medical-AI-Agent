@@ -223,7 +223,7 @@ def writing_plan(candidate, items, blocked):
         if reason:
             blocked.append({'field': 'S.hpi', 'reason': reason, 'rejected': hpi})
         else:
-            plan['hpi'] = f'요약: {hpi["text"].strip()} ({cite(hpi["source_ids"])})'
+            plan['hpi'] = f'요약: {readable_ids(hpi["text"].strip())} ({cite(hpi["source_ids"])})'
     return plan
 
 
@@ -231,7 +231,7 @@ def finalize(candidate, items):
     blocked = []
     note = source_record(items, writing_plan(candidate, items, blocked))
     diagnosis = candidate.get('diagnosis', '')
-    diagnosis = ' '.join(diagnosis.split()) if isinstance(diagnosis, str) else ''
+    diagnosis = readable_ids(' '.join(diagnosis.split())) if isinstance(diagnosis, str) else ''
     if not diagnosis or len(diagnosis.encode()) > 500 or unsafe_generated(diagnosis, items):
         diagnosis = '진단 미정'
     facts = [i for i in items if i['kind'] != 'communication']
@@ -245,7 +245,7 @@ def finalize(candidate, items):
         if reason:
             blocked.append({'field': 'A.evidence', 'reason': reason, 'rejected': entry})
         else:
-            bullets.append(f'- {entry["text"].strip()} ({cite(entry["source_ids"])})')
+            bullets.append(f'- {readable_ids(entry["text"].strip())} ({cite(entry["source_ids"])})')
     body = '\n'.join(bullets[:8]) if bullets else '관찰 근거:\n' + '\n'.join(render(i) for i in facts)
     note['A']['evidence'] = '#1. ' + diagnosis + ' (추정)\n' + body
     differential = candidate.get('differential', [])
@@ -262,10 +262,10 @@ def finalize(candidate, items):
             if isinstance(why, str) and why.strip():
                 problem = unsupported_claim(why, ids, by_id, items)
                 if not problem:
-                    lines.append(f'r/o {name.strip()} : {why.strip()} ({cite(ids)})')
+                    lines.append(f'r/o {readable_ids(name.strip())} : {readable_ids(why.strip())} ({cite(ids)})')
                     continue
                 blocked.append({'field': 'A.differential', 'reason': problem, 'rejected': entry})
-            lines.append(f'r/o {name.strip()} (가설)\n' + '\n'.join(render(by_id[i.split('.')[0]]) for i in dict.fromkeys(ids)))
+            lines.append(f'r/o {readable_ids(name.strip())} (가설)\n' + '\n'.join(render(by_id[i.split('.')[0]]) for i in dict.fromkeys(ids)))
         note['A']['differential'] = '\n'.join(lines)
     plans = candidate.get('P', {})
     if isinstance(plans, dict):

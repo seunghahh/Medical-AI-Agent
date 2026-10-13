@@ -130,6 +130,19 @@ class GroundingTests(unittest.TestCase):
         self.assertIn('(근거: T2, 활력징후, 첫 진술, T12)', note['P']['tests'])
         self.assertNotIn('turn2', note['P']['tests'])
 
+    def test_no_internal_id_survives_anywhere_in_the_record(self):
+        candidate = {'diagnosis': '갑상선기능항진증(turn1)', 'cc': ['opening.s1'],
+                     'hpi': {'text': '식욕 증가(turn1), 발한(turn2)', 'source_ids': ['turn1', 'turn2']},
+                     'evidence': [{'text': '식욕 증가(turn1)는 대사 항진 시사 [opening.s1]', 'source_ids': ['turn1']}],
+                     'differential': [{'name': '감별(vitals)', 'reason': '발한은 설명하나(turn2) 검사로 구분', 'source_ids': ['turn2']}],
+                     'P': {'tests': 'TSH(근거: turn2, vitals)', 'education': '안내(opening.s1)'}}
+        note, diagnosis, _ = finalize(candidate, self.items)
+        text = json.dumps(note, ensure_ascii=False) + diagnosis
+        for leaked in ('turn1', 'turn2', 'opening.', 'vitals', 'source_id', '[turn', '[opening'):
+            self.assertNotIn(leaked, text)
+        self.assertIn('식욕 증가(T1)는 대사 항진 시사 [첫 진술]', note['A']['evidence'])
+        self.assertIn('갑상선기능항진증(T1)', diagnosis)
+
     def test_unusable_model_parts_fall_back_to_the_plain_observations(self):
         candidate = {'diagnosis': '가설', 'cc': ['opening.s9'], 'hpi': {'text': '체중 14kg 감소', 'source_ids': ['turn1']},
                      'evidence': [{'text': '해석', 'source_ids': []}], 'differential': 'oops'}
