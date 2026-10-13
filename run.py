@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from nova_sdk import RECORD_FIELDS, NovaError, empty_record, run_agent
-from grounding import sources, finalize, retrieval_sources, query_spans, asks
+from grounding import sources, finalize, retrieval_sources, query_spans, asks, record_sources
 
 MAX_TURNS = 50
 TIME_MARGIN = 180   # 세션 마감 3분 전부터는 기록 작성으로 넘어갑니다(초)
@@ -67,14 +67,20 @@ JSON 객체 하나만 출력하세요. 모든 값은 한국어 문자열(줄바�
  "P": {"tests": "추가 검사 계획", "treatment": "치료", "disposition": "처치 결정", "follow_up": "추적 계획", "education": "환자 교육"},
  "diagnosis": "가장 가능성 높은 주진단 하나"}"""
 
-GROUNDED_RECORD_PROMPT = """초진 기록을 작성합니다. 제공된 관찰 근거로 주진단 가설과 향후 계획을 정하세요.
-기록은 한국어로 작성하되 의학 용어와 약물 이름은 영어를 사용할 수 있습니다.
-S/O와 관찰 근거 문장은 코드가 원문에서 작성하므로 출력하지 마세요. 문헌은 환자의 관찰이 아닙니다.
-의사 설명에 대한 '네'는 증상 확인이 아닙니다. 모르는 병력·음성 소견·나이·체중을 추측하지 마세요.
-P는 앞으로 제안하는 조치만 쓰며 환자 병력이나 이미 시행한 치료/검사처럼 쓰지 마세요.
-JSON 하나만: {"diagnosis":"주진단 하나", "differential":[{"name":"감별진단 이름만", "source_ids":["opening"]}],
-"P":{"tests":"추가 검사 계획", "treatment":"치료 계획", "disposition":"의뢰 등 계획", "follow_up":"추적 계획", "education":"교육 계획"}}
-감별진단 source_ids는 실제 제공된 관찰 ID만 쓰세요. 확인하지 않은 정상/음성 단정은 금지입니다."""
+GROUNDED_RECORD_PROMPT = """초진 기록을 작성합니다. 제공된 관찰 근거로 주진단 가설과 해석, 향후 계획을 정하세요.
+기록은 한국어로 간결한 병원 초진 기록 말투로 쓰되 의학 용어와 약물 이름은 영어를 사용할 수 있습니다.
+환자의 말과 진찰 소견 원문은 코드가 그대로 옮기므로 반복하지 마세요. 당신은 요약·해석·계획만 씁니다.
+문헌은 환자의 관찰이 아닙니다. 의사 설명에 대한 '네'는 증상 확인이 아닙니다. 모르는 병력·음성 소견·나이·체중·수치를 추측하지 마세요.
+모든 문장은 근거가 된 관찰 ID(source_ids)를 달아야 합니다. 제공된 ID만 쓰세요. 근거 없는 문장은 버려집니다.
+JSON 하나만:
+{"diagnosis":"주진단 하나",
+ "cc":["opening.s1"],                 // 첫 진술에서 주호소에 해당하는 문장 ID
+ "hpi":{"text":"현병력 2~4문장 요약(시작 시점, 경과, 동반 증상)", "source_ids":["opening.s1","turn1"]},
+ "evidence":[{"text":"소견을 해석한 한 문장. 예: 식욕 증가에도 체중 감소 → 대사 항진 시사", "source_ids":["turn1"]}],
+ "differential":[{"name":"감별진단 이름", "reason":"왜 가능성이 낮거나 높은지와 구분하는 검사 한 문장", "source_ids":["turn2"]}],
+ "P":{"tests":"추가 검사 계획", "treatment":"치료 계획", "disposition":"외래/입원/응급 등 처치 결정", "follow_up":"구체적 추적 시점과 항목", "education":"교육 계획"}}
+evidence는 3~6개, differential은 3~5개(각각 reason 포함). 확인하지 않은 정상/음성 단정은 금지입니다.
+P는 앞으로 제안하는 조치만 쓰며 환자 병력이나 이미 시행한 치료/검사처럼 쓰지 마세요."""
 
 
 def prepare():
@@ -334,7 +340,7 @@ def write_record(client, session, transcript, preliminary=True, references='', s
         for _ in range(3):
             try:
                 candidate = parse_json(ask_doctor(client, GROUNDED_RECORD_PROMPT,
-                    '관찰 근거\n' + json.dumps(items, ensure_ascii=False) + '\n\n' + references, 4096)) or {}
+                    '관찰 근거\n' + json.dumps(record_sources(items), ensure_ascii=False) + '\n\n' + references, 6000)) or {}
             except NovaError:
                 break
             if isinstance(candidate.get('diagnosis'), str) and candidate['diagnosis'].strip():

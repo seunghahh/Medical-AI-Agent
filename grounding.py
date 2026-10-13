@@ -91,16 +91,45 @@ def sources(session, transcript):
 
 
 def render(item):
-    prefix = f'[{item["id"]}] '
-    return prefix + (f'질문/요청: {item["question"]}\n답변: ' if item['question'] else '') + item['value']
+    """One compact line for an observation: what was asked, what came back, and where it came from."""
+    value = item['value'].replace('\n', ' / ')
+    body = f'{item["question"]} → {value}' if item['question'] else value
+    return f'- {body} ({label(item["id"])})'
 
 
-def source_record(items):
+def label(source_id):
+    """Short citation for a source id: opening.s1 -> 첫 진술, vitals -> 활력징후, turn12 -> T12."""
+    base = source_id.split('.')[0]
+    return '첫 진술' if base == 'opening' else '활력징후' if base == 'vitals' else 'T' + base[4:] if base.startswith('turn') else base
+
+
+def cite(ids):
+    return ', '.join(dict.fromkeys(label(i) for i in ids))
+
+
+def record_sources(items):
+    """What the record-writing model sees: observations only, the opening split into sentences, no duplicate raw text."""
+    shown = []
+    for item in items:
+        if item['kind'] == 'communication':
+            continue
+        if item['id'] == 'opening':
+            parts = [p for p in re.split(r'(?<=[.!?。])\s+', item['value']) if p.strip()]
+            shown += [{'id': f'opening.s{n}', 'kind': 'opening', 'value': p} for n, p in enumerate(parts)]
+        else:
+            shown.append({k: item[k] for k in ('id', 'kind', 'question', 'value') if item.get(k)})
+    return shown
+
+
+def source_record(items, plan=None):
+    """S and O copied from the observations. `plan` (already validated) only chooses which opening sentences are the
+    chief complaint and supplies a short history summary; every other word comes from what the patient said."""
+    plan = plan or {}
     note = empty_record()
-    note['S']['cc'] = render(items[0])
-    note['S']['hpi'] = render(items[0])
+    opening = items[0]
+    note['S']['cc'] = plan.get('cc') or render(opening)
     buckets = {'pmh': [], 'fh': [], 'sh': [], 'ros': []}
-    exams = []
+    exams, hpi_lines = [], []
     for item in items[1:]:
         if item['kind'] == 'exam':
             exams.append(render(item))
@@ -114,8 +143,13 @@ def source_record(items):
                 key = 'sh'
             else:
                 key = 'ros'
-                note['S']['hpi'] += '\n' + render(item)
+                hpi_lines.append(render(item))
             buckets[key].append(render(item))
+    if plan.get('hpi'):
+        # A summary replaces the repeated Q/A in the history; the questions stay once, in ROS.
+        note['S']['hpi'] = plan['hpi'] + '\n' + render(opening)
+    else:
+        note['S']['hpi'] = '\n'.join([render(opening)] + hpi_lines)
     for field, values in buckets.items():
         note['S'][field] = '\n'.join(values) or '미확인 (확보된 응답 없음)'
     if not any(re.search(r'알레르기|allerg', item['question'], re.I) for item in items if item['kind'] == 'say'):
@@ -141,26 +175,91 @@ def unsafe_generated(text, items):
     return ''
 
 
+NEGATIVE_TEXT = re.compile(r'\(-\)|음성|무병력|(?:흡연|알레르기|발열|과거력|가족력|식욕|소견).{0,15}(?:없|정상)')
+NEGATIVE_ANSWER = re.compile(r'없|않|아니|못|안 |\(-\)')
+
+
+def unsupported_claim(text, ids, by_id, items):
+    """Why a model-written sentence cannot go into the record ('' = fine). It must cite real observations, introduce
+    no measurement or value the patient did not give (numbers above 12 and decimals must appear in the sources),
+    and may call something absent or normal only if a cited answer says so. Meaning is not checked."""
+    if not isinstance(text, str) or not text.strip() or len(text) > 400:
+        return '형식'
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i.split('.')[0] in by_id for i in ids):
+        return '출처 ID'
+    observed = '\n'.join(item['value'] for item in items if item['kind'] != 'communication')
+    if measurements(text) - measurements(observed):
+        return '관찰에 없는 나이/체중/키 수치'
+    seen = set(re.findall(r'\d+(?:\.\d+)?', normalize_measurements(observed)))
+    for number in re.findall(r'\d+(?:\.\d+)?', text):
+        if number not in seen and ('.' in number or int(number) > 12):
+            return '관찰에 없는 수치'
+    cited = [by_id[i.split('.')[0]] for i in ids]
+    if NEGATIVE_TEXT.search(text) and not any(NEGATIVE_ANSWER.search(c['value']) for c in cited):
+        return '근거 없는 음성/정상 단정'
+    return ''
+
+
+def writing_plan(candidate, items, blocked):
+    """Accept the parts of the model's record that pass the checks; the rest falls back to the plain observations."""
+    facts = [i for i in items if i['kind'] != 'communication']
+    by_id = {i['id']: i for i in facts}
+    plan = {}
+    opening = {f'opening.s{n}': p for n, p in enumerate(
+        p for p in re.split(r'(?<=[.!?。])\s+', items[0]['value']) if p.strip())}
+    cc = candidate.get('cc')
+    if isinstance(cc, list) and cc and all(isinstance(i, str) and i in opening for i in cc):
+        plan['cc'] = ' '.join(opening[i] for i in dict.fromkeys(cc)) + ' (첫 진술)'
+    hpi = candidate.get('hpi')
+    if isinstance(hpi, dict):
+        reason = unsupported_claim(hpi.get('text'), hpi.get('source_ids'), by_id, items)
+        if reason:
+            blocked.append({'field': 'S.hpi', 'reason': reason, 'rejected': hpi})
+        else:
+            plan['hpi'] = f'요약: {hpi["text"].strip()} ({cite(hpi["source_ids"])})'
+    return plan
+
+
 def finalize(candidate, items):
-    note = source_record(items)
     blocked = []
+    note = source_record(items, writing_plan(candidate, items, blocked))
     diagnosis = candidate.get('diagnosis', '')
     diagnosis = ' '.join(diagnosis.split()) if isinstance(diagnosis, str) else ''
     if not diagnosis or len(diagnosis.encode()) > 500 or unsafe_generated(diagnosis, items):
         diagnosis = '진단 미정'
-    # Assessment quotes observations verbatim; differential names remain hypotheses.
     facts = [i for i in items if i['kind'] != 'communication']
-    note['A']['evidence'] = '#1. ' + diagnosis + ' (추정)\n관찰 근거:\n' + '\n'.join(render(i) for i in facts)
-    differential = candidate.get('differential', [])
     by_id = {i['id']: i for i in facts}
+    # Assessment: interpreted bullets that cite their observations; if none survive the checks, the observations themselves.
+    bullets = []
+    for entry in candidate.get('evidence', []) if isinstance(candidate.get('evidence'), list) else []:
+        if not isinstance(entry, dict):
+            continue
+        reason = unsupported_claim(entry.get('text'), entry.get('source_ids'), by_id, items)
+        if reason:
+            blocked.append({'field': 'A.evidence', 'reason': reason, 'rejected': entry})
+        else:
+            bullets.append(f'- {entry["text"].strip()} ({cite(entry["source_ids"])})')
+    body = '\n'.join(bullets[:8]) if bullets else '관찰 근거:\n' + '\n'.join(render(i) for i in facts)
+    note['A']['evidence'] = '#1. ' + diagnosis + ' (추정)\n' + body
+    differential = candidate.get('differential', [])
     if isinstance(differential, list):
+        lines = []
         for entry in differential[:5]:
             if not isinstance(entry, dict):
                 continue
             name, ids = entry.get('name'), entry.get('source_ids')
-            if (isinstance(name, str) and name.strip() and not unsafe_generated(name, items)
-                    and isinstance(ids, list) and ids and all(isinstance(i, str) and i in by_id for i in ids)):
-                note['A']['differential'] += f'r/o {name.strip()} (가설)\n' + '\n'.join(render(by_id[i]) for i in ids) + '\n'
+            if not (isinstance(name, str) and name.strip() and not unsafe_generated(name, items)
+                    and isinstance(ids, list) and ids and all(isinstance(i, str) and i.split('.')[0] in by_id for i in ids)):
+                continue
+            why = entry.get('reason')
+            if isinstance(why, str) and why.strip():
+                problem = unsupported_claim(why, ids, by_id, items)
+                if not problem:
+                    lines.append(f'r/o {name.strip()} : {why.strip()} ({cite(ids)})')
+                    continue
+                blocked.append({'field': 'A.differential', 'reason': problem, 'rejected': entry})
+            lines.append(f'r/o {name.strip()} (가설)\n' + '\n'.join(render(by_id[i.split('.')[0]]) for i in dict.fromkeys(ids)))
+        note['A']['differential'] = '\n'.join(lines)
     plans = candidate.get('P', {})
     if isinstance(plans, dict):
         for field in note['P']:

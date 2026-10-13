@@ -100,6 +100,42 @@ class GroundingTests(unittest.TestCase):
             run.retrieve(None, self.session, [], state)
         self.assertEqual(calls, [{}])
 
+    def test_model_summary_and_interpretation_are_cited_and_checked(self):
+        candidate = {'diagnosis': '갑상선 기능 항진증', 'cc': ['opening.s1'],
+                     'hpi': {'text': '32세 여자, 체중 7kg 감소, 식욕 증가, 야간 발한.', 'source_ids': ['opening.s0', 'opening.s1', 'turn1', 'turn2']},
+                     'evidence': [
+                         {'text': '식욕 증가에도 체중 감소 → 대사 항진 시사', 'source_ids': ['turn1']},
+                         {'text': '빈맥 HR 120', 'source_ids': ['vitals']},                 # value the patient never gave
+                         {'text': '과거력 없음', 'source_ids': ['turn1']},                  # cited answer does not say so
+                         {'text': '과거력 없음', 'source_ids': ['turn3']},                  # cited answer does ("없었어요")
+                         {'text': '발열 소견', 'source_ids': ['turn99']}],                  # no such observation
+                     'differential': [{'name': '갑상선염', 'reason': '야간 발한이 있으나 TSH 수용체 항체로 감별', 'source_ids': ['turn2']}]}
+        note, _, blocked = finalize(candidate, self.items)
+        evidence = note['A']['evidence']
+        self.assertIn('- 식욕 증가에도 체중 감소 → 대사 항진 시사 (T1)', evidence)
+        self.assertIn('- 과거력 없음 (T3)', evidence)
+        self.assertNotIn('HR 120', evidence); self.assertNotIn('T99', evidence)
+        self.assertEqual(sorted(b['reason'] for b in blocked),
+                         ['관찰에 없는 수치', '근거 없는 음성/정상 단정', '출처 ID'])
+        self.assertIn('r/o 갑상선염 : 야간 발한이 있으나 TSH 수용체 항체로 감별 (T2)', note['A']['differential'])
+        self.assertTrue(note['S']['cc'].startswith('56kg에서 7kg'))
+        self.assertTrue(note['S']['hpi'].startswith('요약: 32세 여자'))
+        self.assertIn('나는 32세 여자이다', note['S']['hpi'])             # the patient's own statement stays
+        self.assertNotIn('식욕이 좋아졌어요', note['S']['hpi'])             # questions are listed once, in ROS
+        self.assertIn('식욕이 좋아졌어요', note['S']['ros'])
+        self.assertNotIn('질문/요청', json.dumps(note, ensure_ascii=False))
+
+    def test_unusable_model_parts_fall_back_to_the_plain_observations(self):
+        candidate = {'diagnosis': '가설', 'cc': ['opening.s9'], 'hpi': {'text': '체중 14kg 감소', 'source_ids': ['turn1']},
+                     'evidence': [{'text': '해석', 'source_ids': []}], 'differential': 'oops'}
+        note, _, blocked = finalize(candidate, self.items)
+        self.assertIn('관찰 근거:', note['A']['evidence'])
+        self.assertIn('식욕이 좋아졌어요', note['A']['evidence'])
+        self.assertIn('식욕이 좋아졌어요', note['S']['hpi'])
+        self.assertFalse(note['S']['hpi'].startswith('요약'))
+        self.assertIn('나는 32세 여자이다', note['S']['cc'])
+        self.assertEqual({b['field'] for b in blocked}, {'S.hpi', 'A.evidence'})
+
     def test_differentials_require_real_source_ids(self):
         note, _, _ = finalize({'diagnosis': '가설', 'differential': [
             {'name': '정상 식욕', 'source_ids': ['missing']},
