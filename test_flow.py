@@ -48,17 +48,40 @@ class FlowTests(unittest.TestCase):
         replies = [*[say(f'{n}번째 증상이 어떤가요?') for n in range(6)], EXPLANATION, NOTE]
         sim, spoken = run_consult(replies, max_turns=8)
         self.assertEqual(sim.turns, 8)
-        self.assertEqual(spoken[-2:], EXPLANATION['messages'][:2])
+        self.assertEqual(spoken[-2:], [EXPLANATION['messages'][0], run.FALLBACK_EXPLANATION[2]])  # no room: cause + safety line
 
     def test_explanation_never_asks_a_question(self):
         doctor = Endpoint([{'messages': ['증상이 더 있나요?', '또 궁금한 게 있으세요?']}, {'messages': ['검사로 확인하겠습니다.', '질문 있으세요?']}])
         sim = simulator(); sim.doctor = doctor
-        self.assertEqual(run.explanation_messages(LocalClient(sim), sim.public_session(), [], 3), ['검사로 확인하겠습니다.'])
+        self.assertEqual(run.explanation_messages(LocalClient(sim), sim.public_session(), [], 3),
+                         ['검사로 확인하겠습니다.', run.FALLBACK_EXPLANATION[2]])  # the only valid line, plus the fixed safety line
         junk = Endpoint([{'messages': ['x' * 31]}, {'nothing': 1}])
         sim.doctor = junk
         fallback = run.explanation_messages(LocalClient(sim), sim.public_session(), [], 3)
         self.assertEqual(fallback, list(run.FALLBACK_EXPLANATION))
         self.assertTrue(all(0 < len(m) <= run.MAX_CHARS and not asks(m) for m in run.FALLBACK_EXPLANATION))
+
+    def test_only_the_first_of_several_questions_is_sent(self):
+        sim = simulator(); sim.doctor = Endpoint([say('흡연을 하시나요? 어떤 일을 하시나요?')])
+        transcript = []
+        step = run.next_step(LocalClient(sim), sim.public_session(), transcript, 20)
+        self.assertEqual(step, ('SAY', '흡연을 하시나요?'))
+        self.assertIn('보류한 질문: 어떤 일을 하시나요?', transcript[-1])
+        sim.doctor = Endpoint([say('어디가 아픈가요?')])
+        quiet = []
+        self.assertEqual(run.next_step(LocalClient(sim), sim.public_session(), quiet, 20), ('SAY', '어디가 아픈가요?'))
+        self.assertEqual(quiet, [])
+
+    def test_the_explanation_always_includes_warning_signs(self):
+        def messages(*texts):
+            sim = simulator(); sim.doctor = Endpoint([{'messages': list(texts)}])
+            return run.explanation_messages(LocalClient(sim), sim.public_session(), [], 3)
+        none_mention = messages('가능성이 있어요.', '검사 후 치료를 정해요.', '질문 있으세요?')   # third is a question: dropped
+        self.assertEqual(none_mention, ['가능성이 있어요.', '검사 후 치료를 정해요.', run.FALLBACK_EXPLANATION[2]])
+        full = messages('가능성이 있어요.', '검사 후 치료를 정해요.', '카페인은 줄입니다.')
+        self.assertEqual(full[-1], run.FALLBACK_EXPLANATION[2]); self.assertEqual(len(full), 3)
+        covered = messages('가능성이 있어요.', '심해지면 응급실에 가야 해요.')
+        self.assertEqual(covered, ['가능성이 있어요.', '심해지면 응급실에 가야 해요.'])
 
     def test_patient_replies_to_the_explanation_are_not_observations(self):
         session = {'initial': {'opening': '배가 아파요', 'vital_signs': '미제공'}}
