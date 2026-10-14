@@ -26,15 +26,15 @@ CACHE = HERE / '.cache'
 
 EXTRACT_PROMPT = """당신은 진료 기록 감수자입니다. 참고 초진 기록(모범 예시)의 S(문진)와 O(진찰) 부분에서, 서로 다른 임상 소견을 하나씩 뽑으세요.
 문진 항목(현병력, 과거력, 약물, 가족력, 사회력, 계통 문진)은 kind를 history, 진찰 소견은 exam으로 합니다.
-같은 질문이나 같은 진찰로 함께 알아낼 수 있는 소견은 하나로 묶습니다. 환자의 첫 진술에 이미 나온 정보(나이, 성별, 주호소)는 제외합니다.
+한 항목에는 한 가지 소견만 씁니다("지남력 정상, MMSE 28점"처럼 묶지 말고 둘로 나눕니다). 환자의 첫 진술과 시작 활력징후에 이미 나온 정보(나이, 성별, 주호소, 혈압·맥박·호흡·체온)는 제외합니다.
 검사(혈액·영상) 결과와 평가·계획(A/P)도 제외합니다. 항목은 15자 안팎의 짧은 한국어로 씁니다.
 JSON 하나만: {"items":[{"item":"항목","kind":"history 또는 exam"}]}"""
 
 JUDGE_PROMPT = """당신은 진료 기록 감수자입니다. 번호가 붙은 임상 소견 목록과 에이전트의 진료 로그를 비교합니다.
 각 소견마다, 에이전트가 그것을 알아낼 수 있는 질문을 했거나 진찰 동작을 요청했는지 판정합니다.
-로그에 맞는 질문이나 진찰이 있어야 covered=true입니다. 에이전트가 우연히 같은 정보를 얻었더라도 묻지 않았으면 false입니다.
+로그에 맞는 질문이나 진찰이 있어야 covered=true입니다. 소견과 비슷하지만 같지는 않은 것을 확인했으면(예: 자세성 떨림 소견인데 안정시 떨림을 확인) "partial"입니다. 에이전트가 우연히 같은 정보를 얻었더라도 묻지 않았으면 false입니다.
 turn에는 근거가 된 로그의 턴 번호를 씁니다(false이면 null).
-JSON 하나만: {"results":[{"n":번호,"covered":true 또는 false,"turn":번호 또는 null}]}"""
+JSON 하나만: {"results":[{"n":번호,"covered":true 또는 "partial" 또는 false,"turn":번호 또는 null}]}"""
 
 
 def build_log(transcript):
@@ -101,21 +101,27 @@ def judge(endpoint, items, log):
     numbered = '\n'.join(f"{n}. [{i['kind']}] {i['item']}" for n, i in enumerate(items, 1))
     answers = {r.get('n'): r for r in ask(endpoint, JUDGE_PROMPT, f'소견 목록\n{numbered}\n\n에이전트의 진료 로그\n{log}', 'results')
                if isinstance(r, dict)}
-    return [{**item, 'covered': answers.get(n, {}).get('covered') is True, 'turn': answers.get(n, {}).get('turn')}
+    def verdict(value):
+        return True if value is True else 'partial' if value == 'partial' else False
+    return [{**item, 'covered': verdict(answers.get(n, {}).get('covered')), 'turn': answers.get(n, {}).get('turn')}
             for n, item in enumerate(items, 1)]
 
 
 def summarize(items):
+    """Full coverage counts 1, a partial match counts 0.5."""
     result = {}
     for kind in ('history', 'exam'):
         group = [i for i in items if i.get('kind') == kind]
-        covered = [i for i in group if i.get('covered') is True]
-        result[kind] = {'total': len(group), 'covered': len(covered),
-                        'share': round(len(covered) / len(group), 3) if group else None,
-                        'missed': [i['item'] for i in group if i.get('covered') is not True]}
+        full = sum(1 for i in group if i.get('covered') is True)
+        partial = sum(1 for i in group if i.get('covered') == 'partial')
+        credit = full + 0.5 * partial
+        result[kind] = {'total': len(group), 'covered': full, 'partial': partial, 'credit': credit,
+                        'share': round(credit / len(group), 3) if group else None,
+                        'missed': [i['item'] for i in group if i.get('covered') is False],
+                        'partly': [i['item'] for i in group if i.get('covered') == 'partial']}
     total = sum(r['total'] for r in result.values())
-    done = sum(r['covered'] for r in result.values())
-    result['all'] = {'total': total, 'covered': done, 'share': round(done / total, 3) if total else None}
+    credit = sum(r['credit'] for r in result.values())
+    result['all'] = {'total': total, 'credit': credit, 'share': round(credit / total, 3) if total else None}
     return result
 
 
@@ -124,7 +130,8 @@ def report(folder, endpoint, gold_path=None, refresh=False, cache=CACHE):
     transcript = json.loads((folder / 'transcript.json').read_text(encoding='utf-8'))
     case_id = (transcript.get('summary') or {}).get('case_id') or folder.resolve().name.split('-')[0]
     path = Path(gold_path) if gold_path else HERE / 'samples' / case_id / 'model_record.md'
-    opening = str((transcript.get('start_information') or {}).get('opening', ''))
+    start = transcript.get('start_information') or {}
+    opening = f"{start.get('opening', '')}\n활력징후: {start.get('vital_signs', '')}"
     findings = gold_items(endpoint, gold_sections(path.read_text(encoding='utf-8')), opening, case_id, refresh, cache)
     if not findings:
         raise RuntimeError('모범 기록에서 항목을 뽑지 못했습니다')
@@ -152,11 +159,13 @@ def main():
         except Exception as exc:  # keep going: one broken folder should not hide the others
             print(f'{folder}: {type(exc).__name__}: {exc}', file=sys.stderr)
             continue
-        print(f"\n{case_id}  문진 {summary['history']['covered']}/{summary['history']['total']}  "
-              f"진찰 {summary['exam']['covered']}/{summary['exam']['total']}  전체 {summary['all']['share']}")
-        for kind, title in (('history', '놓친 문진'), ('exam', '놓친 진찰')):
+        print(f"\n{case_id}  문진 {summary['history']['credit']:g}/{summary['history']['total']}  "
+              f"진찰 {summary['exam']['credit']:g}/{summary['exam']['total']}  전체 {summary['all']['share']}  (부분 인정 0.5)")
+        for kind, title in (('history', '문진'), ('exam', '진찰')):
             if summary[kind]['missed']:
-                print(f"  {title}: " + ', '.join(summary[kind]['missed']))
+                print(f"  놓친 {title}: " + ', '.join(summary[kind]['missed']))
+            if summary[kind]['partly']:
+                print(f"  일부만 확인한 {title}: " + ', '.join(summary[kind]['partly']))
         if summary['all']['share'] is not None:
             shares.append(summary['all']['share'])
     if len(shares) > 1:

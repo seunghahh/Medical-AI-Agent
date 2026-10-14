@@ -188,7 +188,8 @@ def next_step(client, session, transcript, turns_left, references='', plan=None,
     exams = exams_done(transcript)
     if exams < MIN_EXAMS and ((plan and not left) or turns_left <= EXAM_PHASE_TURNS):
         request += (f'\n진찰이 {exams}회뿐입니다. 문진을 줄이고 증상과 관련된 신체 진찰을 요청하세요. '
-                    f'후보: {EXAM_MENU}. 예: "심장 소리를 청진하겠습니다"')
+                    f'후보: {EXAM_MENU}. 표준 동작 이름으로 요청해야 인정됩니다. 예: "심장 소리를 청진하겠습니다", '
+                    '"양팔을 뻗게 해 떨림을 확인하겠습니다", "기립성 혈압을 측정하겠습니다", "롬베르그 검사를 하겠습니다"')
     elif plan and not left:
         request += '\n필수 항목과 진찰을 모두 마쳤습니다. 꼭 필요한 추가 확인이 없으면 DONE을 선택하세요.'
     request += '\n다음 행동:'

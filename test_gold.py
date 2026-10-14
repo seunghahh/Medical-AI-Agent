@@ -15,7 +15,8 @@ TRANSCRIPT = {'summary': {'case_id': 'C10'}, 'start_information': {'opening': '3
     {'turn': 2, 'action': 'EXAM', 'content': '목을 만져 보겠습니다', 'response': {}},
     {'turn': 3, 'action': 'EXAM', 'content': '눈을 살펴보겠습니다', 'response': {'result': '돌출(+/+)'}},
     {'turn': 3, 'action': 'DIAGNOSE', 'diagnosis': '갑상선기능항진증'}]}
-VERDICT = {'results': [{'n': 1, 'covered': True, 'turn': 1}, {'n': 3, 'covered': True, 'turn': 3}, 'junk']}
+VERDICT = {'results': [{'n': 1, 'covered': True, 'turn': 1}, {'n': 2, 'covered': 'partial', 'turn': 2},
+                       {'n': 3, 'covered': True, 'turn': 3}, 'junk']}
 
 
 class GoldCoverageTests(unittest.TestCase):
@@ -42,6 +43,19 @@ class GoldCoverageTests(unittest.TestCase):
         for dropped in ('## [O] 검사 결과', '## [A]', '## [P]', '## 주진단'):
             self.assertNotIn(dropped, text)
 
+    def test_the_vital_signs_given_at_the_start_are_passed_with_the_opening(self):
+        seen = []
+
+        class Spy(Endpoint):
+            def complete(self, messages, **kwargs):
+                seen.append(messages[1]['content'])
+                return super().complete(messages, **kwargs)
+
+        withvitals = dict(TRANSCRIPT, start_information={'opening': '32세 여자', 'vital_signs': '맥박 102'})
+        (self.folder / 'transcript.json').write_text(json.dumps(withvitals, ensure_ascii=False), encoding='utf-8')
+        gc.report(self.folder, Spy([{'items': RAW}, VERDICT]), cache=self.cache)
+        self.assertIn('활력징후: 맥박 102', seen[0])
+
     def test_a_chatty_or_malformed_answer_is_still_parsed(self):
         self.assertEqual(len(gc.first_json('설명 ' + json.dumps({'items': RAW[:2]}, ensure_ascii=False) + ' 끝', 'items')), 2)
         self.assertEqual(gc.first_json('not json', 'items'), [])
@@ -61,15 +75,19 @@ class GoldCoverageTests(unittest.TestCase):
     def test_judging_marks_unmentioned_findings_as_missed(self):
         findings = [{'item': i['item'], 'kind': i['kind']} for i in RAW[:4]]
         judged = gc.judge(Endpoint([VERDICT]), findings, 'log')
-        self.assertEqual([i['covered'] for i in judged], [True, False, True, False])
+        self.assertEqual([i['covered'] for i in judged], [True, 'partial', True, False])
         self.assertEqual(judged[2]['turn'], 3)
+        odd = gc.judge(Endpoint([{'results': [{'n': 1, 'covered': 'yes'}, {'n': 2, 'covered': 1}]}]), findings, 'log')
+        self.assertEqual([i['covered'] for i in odd], [False] * 4)          # only true / "partial" count
 
     def test_summary_counts_and_lists_the_missed_findings(self):
         findings = [{'item': i['item'], 'kind': i['kind']} for i in RAW[:4]]
         summary = gc.summarize(gc.judge(Endpoint([VERDICT]), findings, 'log'))
-        self.assertEqual((summary['history']['covered'], summary['history']['total']), (1, 2))
+        self.assertEqual((summary['history']['covered'], summary['history']['partial'], summary['history']['total']), (1, 1, 2))
+        self.assertEqual(summary['history']['share'], 0.75)                  # one full finding plus half credit
+        self.assertEqual(summary['history']['partly'], ['월경 변화'])
         self.assertEqual(summary['exam']['missed'], ['갑상선 bruit'])
-        self.assertEqual(summary['all']['share'], 0.5)
+        self.assertEqual(summary['all']['share'], 0.625)
         self.assertIsNone(gc.summarize([])['all']['share'])
 
     def test_the_model_is_asked_for_temperature_zero_and_retried_once(self):
@@ -86,7 +104,7 @@ class GoldCoverageTests(unittest.TestCase):
 
     def test_report_writes_the_result_next_to_the_consultation_and_keeps_the_cache_out_of_the_repo(self):
         case_id, summary = gc.report(self.folder, Endpoint([{'items': RAW}, VERDICT]), cache=self.cache)
-        self.assertEqual((case_id, summary['all']['covered'], summary['all']['total']), ('C10', 2, 4))
+        self.assertEqual((case_id, summary['all']['credit'], summary['all']['total']), ('C10', 2.5, 4))
         saved = json.loads((self.folder / 'gold_coverage.json').read_text(encoding='utf-8'))
         self.assertEqual(len(saved['items']), 4)
         self.assertTrue((self.cache / 'gold_items_C10.json').exists())
