@@ -187,6 +187,30 @@ class PlanTests(unittest.TestCase):
         self.assertEqual([i['name'] for i in state['visit_plan']['items']], ['수면제 용량 변화', '가장 걱정되는 점'])
         self.assertEqual(state['visit_plan']['left_undone'], ['수면제 용량 변화', '가장 걱정되는 점'])   # DONE won 3 nudges later
 
+    def test_the_model_reports_which_planned_item_an_action_covers(self):
+        items = self.plan(self.PLAN)
+        covered = set()
+        sim = simulator()
+        sim.doctor = Endpoint([{'action': 'SAY', 'content': '그 약을 어떻게 드세요?', 'item': 1}])
+        step = run.next_step(LocalClient(sim), sim.public_session(), [], 20, '', items, covered)
+        self.assertEqual((step, covered), (('SAY', '그 약을 어떻게 드세요?'), {1}))
+        self.assertEqual([n for n, _ in run.remaining_numbered(items, [], covered)], [2, 3])      # keyword-free progress
+        seen = json.dumps(sim.doctor.messages, ensure_ascii=False)
+        self.assertIn('1. 수면제 용량 변화, 2. 기립성 혈압, 3. 가장 걱정되는 점', seen)               # numbered list offered
+        for bad in ('x', 0, 9, True and 99):                                                     # nonsense numbers are ignored
+            sim.doctor = Endpoint([{'action': 'SAY', 'content': '질문입니다?', 'item': bad}])
+            run.next_step(LocalClient(sim), sim.public_session(), [], 20, '', items, covered)
+        self.assertEqual(covered, {1})
+
+    def test_action_selection_gets_a_short_hint_not_the_guideline_text(self):
+        state = {'retrievals': [{'thought': '수면제 의존 가능성. ' * 80, 'hits': [{'title': 'Insomnia CPG'}, {'title': 'Zolpidem'}]}]}
+        hint = run.step_hint(state)
+        self.assertTrue(hint.startswith('참고(지침 검색 요약): 수면제 의존 가능성'))
+        self.assertIn('찾은 문서: Insomnia CPG; Zolpidem', hint)
+        self.assertLess(len(hint), 600)
+        self.assertEqual(run.step_hint({}), '')
+        self.assertEqual(run.step_hint(None), '')
+
     def test_tiny_budgets_skip_the_plan(self):
         # With 4 turns a plan call would eat the first scripted reply (DONE); the closing and the record follow it.
         with patch.object(run, 'PLAN_VISIT', True):
