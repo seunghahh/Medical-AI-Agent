@@ -177,6 +177,16 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(spoken[:2], ['수면제 용량이 늘었나요?', '가장 걱정되시는 점은 무엇인가요?'])
         self.assertEqual(spoken[2:], MESSAGES)
 
+    def test_the_plan_and_what_was_left_undone_are_kept_for_the_logs(self):
+        plan = {'history': [{'name': '수면제 용량 변화', 'kw': ['용량']}], 'exams': []}
+        sim = simulator([{'content': '네'}] * 8)
+        sim.doctor = Endpoint([plan, {'action': 'DONE'}, {'action': 'DONE'}, {'action': 'DONE'}, {'action': 'DONE'}, *CLOSING, NOTE])
+        state = {'max_turns': 12}
+        with patch.object(run, 'PLAN_VISIT', True):
+            run.consult(LocalClient(sim), state)
+        self.assertEqual([i['name'] for i in state['visit_plan']['items']], ['수면제 용량 변화', '가장 걱정되는 점'])
+        self.assertEqual(state['visit_plan']['left_undone'], ['수면제 용량 변화', '가장 걱정되는 점'])   # DONE won 3 nudges later
+
     def test_tiny_budgets_skip_the_plan(self):
         # With 4 turns a plan call would eat the first scripted reply (DONE); the closing and the record follow it.
         with patch.object(run, 'PLAN_VISIT', True):
