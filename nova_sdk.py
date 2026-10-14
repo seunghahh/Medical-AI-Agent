@@ -9,7 +9,10 @@ import urllib.parse
 import urllib.request
 import uuid
 
-__version__ = '1.0.0'
+__version__ = '1.0.1'
+# Cloudflare's browser integrity check in front of nova.snubhai.org refuses urllib's default User-Agent
+# (HTTP 403, "error code: 1010"); every request carries this one instead (2026-10-12).
+USER_AGENT = 'nova-sdk/' + __version__
 
 
 # The initial clinical record: free text in each of these S/O/A/P fields (an empty string is allowed).
@@ -40,7 +43,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class Client:
-    def __init__(self, api_base=None, token=None, session_id=None, *, sample=False, timeout=120):
+    def __init__(self, api_base=None, token=None, session_id=None, *, sample=False, timeout=240):
         self.api_base = (api_base or os.environ['NOVA_API_BASE']).rstrip('/')
         self.token = token or os.environ['NOVA_RUN_TOKEN']
         self.session_id = str(session_id or os.getenv('NOVA_SESSION_ID', ''))
@@ -58,7 +61,8 @@ class Client:
         request = urllib.request.Request(
             self.api_base + path, method=method,
             data=json.dumps(body, ensure_ascii=False).encode('utf-8') if body is not None else None,
-            headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json'},
+            headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json',
+                     'User-Agent': USER_AGENT},
         )
         try:
             response = self._open(request)
