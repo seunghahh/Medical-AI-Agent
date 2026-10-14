@@ -98,11 +98,13 @@ class ContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for dataset in ('agentclinic', 'ddxplus', 'aci'):
                 note = empty_record(); note['S']['cc'] = 'Observed complaint'
-                replies = ([{'action': 'DONE'}] if dataset != 'aci' else []) + [{**note, 'diagnosis': 'provisional'}]
+                doctor = Endpoint([{**note, 'diagnosis': 'provisional'}]) if dataset == 'aci' else PhaseEndpoint()
                 def factory(case, **kwargs):
-                    return BenchmarkSimulator(case, doctor=Endpoint(replies), sim=Endpoint(), **kwargs)
+                    sim = BenchmarkSimulator(case, doctor=doctor, sim=Endpoint(), **kwargs)
+                    sim.patient = lambda utterance: ('미확인: 원자료에 해당 정보가 없습니다.', utterance)
+                    return sim
                 args = SimpleNamespace(command='run', data_root=str(bench.DEFAULT_DATA), dataset=dataset,
-                                       split='validate', offset=0, limit=1, max_turns=2, minutes=20, no_rag=True,
+                                       split='validate', offset=0, limit=1, max_turns=50, minutes=20, no_rag=True,
                                        port=8768, no_browser=True)
                 with patch.object(bench, 'ROOT', Path(tmp)), patch.object(bench, 'BenchmarkSimulator', side_effect=factory), patch('builtins.print'):
                     self.assertEqual(bench.execute(args), 0)

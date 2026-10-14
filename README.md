@@ -2,6 +2,8 @@
 
 A Python agent for clinical conversations. It gathers patient history, requests focused physical examination findings, and produces a SOAP note with a provisional diagnosis and follow-up plan. Optional local medical references support diagnosis review.
 
+![Clinical conversation interface demo](docs/nova-demo.gif)
+
 ## Run locally
 
 Use Python 3.12 or newer and [Ollama](https://ollama.com).
