@@ -6,6 +6,7 @@ from unittest.mock import patch
 import run
 from grounding import asks, sources
 from nova_local import LocalClient
+from nova_sdk import NovaError
 from test_contract import Endpoint, simulator
 
 NOTE = {'diagnosis': '진단 미정'}
@@ -189,18 +190,49 @@ class PlanTests(unittest.TestCase):
 
     def test_the_model_reports_which_planned_item_an_action_covers(self):
         items = self.plan(self.PLAN)
-        covered = set()
+        claim = {}
         sim = simulator()
         sim.doctor = Endpoint([{'action': 'SAY', 'content': '그 약을 어떻게 드세요?', 'item': 1}])
-        step = run.next_step(LocalClient(sim), sim.public_session(), [], 20, '', items, covered)
-        self.assertEqual((step, covered), (('SAY', '그 약을 어떻게 드세요?'), {1}))
-        self.assertEqual([n for n, _ in run.remaining_numbered(items, [], covered)], [2, 3])      # keyword-free progress
+        step = run.next_step(LocalClient(sim), sim.public_session(), [], 20, '', items, set(), claim)
+        self.assertEqual((step, claim), (('SAY', '그 약을 어떻게 드세요?'), {'item': 1}))
         seen = json.dumps(sim.doctor.messages, ensure_ascii=False)
         self.assertIn('1. 수면제 용량 변화, 2. 기립성 혈압, 3. 가장 걱정되는 점', seen)               # numbered list offered
-        for bad in ('x', 0, 9, True and 99):                                                     # nonsense numbers are ignored
+        for bad in ('x', 0, 9, True, 99):                                                        # nonsense numbers are ignored
+            nothing = {}
             sim.doctor = Endpoint([{'action': 'SAY', 'content': '질문입니다?', 'item': bad}])
-            run.next_step(LocalClient(sim), sim.public_session(), [], 20, '', items, covered)
-        self.assertEqual(covered, {1})
+            run.next_step(LocalClient(sim), sim.public_session(), [], 20, '', items, set(), nothing)
+            self.assertEqual(nothing, {})
+        self.assertEqual([n for n, _ in run.remaining_numbered(items, [], {1})], [2, 3])
+
+    def test_an_item_counts_only_after_the_action_was_accepted(self):
+        plan = {'history': [{'name': '진통제 사용', 'kw': ['xyz']}], 'exams': []}
+        def left_after(*replies, refuse_exam=False):
+            sim = simulator([{'content': '네'}] * 8)
+            sim.doctor = Endpoint([plan, *replies, *CLOSING, NOTE])
+            state = {'max_turns': 12}
+            client = LocalClient(sim)
+            error = NovaError('EXAM_NOT_RECOGNIZED', 422)
+            with patch.object(run, 'PLAN_VISIT', True), patch.object(run, 'MAX_NUDGES', 0),                     patch.object(client, 'exam', side_effect=error if refuse_exam else None):
+                run.consult(client, state)
+            return state['visit_plan']['left_undone']
+        done = {'action': 'DONE'}
+        accepted = left_after({'action': 'SAY', 'content': '약은요?', 'item': 1}, done, done)
+        self.assertEqual(accepted, ['가장 걱정되는 점'])                       # item 1 counted without a keyword match
+        refused = left_after({'action': 'EXAM', 'content': '오늘 날짜를 말씀해 주세요', 'item': 1}, done, done, refuse_exam=True)
+        self.assertEqual(refused, ['진통제 사용', '가장 걱정되는 점'])         # the exam was refused: nothing counted
+
+    def test_the_agent_is_told_to_examine_when_exams_are_too_few_and_to_finish_when_enough(self):
+        items = self.plan(self.PLAN)
+        def request(transcript, turns_left, claim_items):
+            sim = simulator(); sim.doctor = Endpoint([{'action': 'DONE'}])
+            run.next_step(LocalClient(sim), sim.public_session(), transcript, turns_left, '', claim_items, set(range(1, 4)))
+            return sim.doctor.messages[0][1]['content']
+        exam = ['턴 %d 진찰(복부 촉진): 정상' % n for n in range(4)]
+        self.assertIn('진찰이 0회뿐입니다', request([], 30, items))                   # nothing left to ask, no exams yet
+        self.assertIn('심장 소리를 청진하겠습니다', request([], 30, items))
+        self.assertIn('DONE을 선택하세요', request(exam, 30, items))                  # enough exams, nothing left
+        self.assertNotIn('진찰이 0회뿐', request([], 40, None))                      # no plan and plenty of turns: leave it
+        self.assertIn('진찰이 0회뿐', request([], 20, None))                          # few turns left, no exams: examine now
 
     def test_action_selection_gets_a_short_hint_not_the_guideline_text(self):
         state = {'retrievals': [{'thought': '수면제 의존 가능성. ' * 80, 'hits': [{'title': 'Insomnia CPG'}, {'title': 'Zolpidem'}]}]}

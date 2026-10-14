@@ -34,6 +34,10 @@ COVERAGE = (('과거력', r'과거|병력|앓|수술|입원|지병|만성|기저
 PLAN_VISIT = True   # 진료 시작 때 이 환자에게 꼭 확인할 문진·진찰 항목을 모델이 한 번 정한다
 MIN_BUDGET_FOR_PLAN = 8   # 턴이 이보다 적으면 계획 없이 진행
 MAX_ITEMS = 12
+MIN_EXAMS = 4          # 문진을 마친 뒤에도 진찰이 이보다 적으면 진찰을 요청한다
+EXAM_PHASE_TURNS = 24  # 남은 턴이 이 이하인데 진찰이 부족하면 진찰을 요청한다
+EXAM_MENU = ('활력징후·전신 상태, 눈·구강·인두, 목(갑상선·림프절), 흉부 심음·폐음, 복부, 피부, '
+             '사지 근력·반사·협조운동·보행, 기립성 혈압')
 LIGHT_STEPS = True   # 문진 중 행동 선택에는 지침 본문 대신 짧은 힌트만 붙인다(본문은 마무리 첫 말과 기록 작성에만)
 # 환자가 가장 걱정하는 점은 어느 증례에서나 묻는다(마무리 설명에서 그 걱정에 답하기 위해)
 CONCERN_ITEM = {'kind': '문진', 'name': '가장 걱정되는 점', 'kw': ['가장 걱정', '걱정되시는', '우려', '염려']}
@@ -64,6 +68,7 @@ STEP_PROMPT = f"""당신은 외래 진료실의 의사입니다. 가상 환자�
 질문은 한국어로 한 번에 하나만 하고(물음표는 하나), 이미 물은 것은 다시 묻지 않습니다. 진찰은 한 번에 동작 하나만 요청합니다.
 아래 '아직 안 한 필수 항목'이 있으면 일반 템플릿 문진보다 먼저 확인합니다. 그 항목을 다루는 행동이면 JSON에 "item": 번호를 함께 적습니다(해당 없으면 생략). 같은 주제(예: 수면 패턴)에 3턴을 넘게 쓰지 않습니다.
 환자가 첫 진술에서 직접 요청한 것이 있으면 그것과 관련된 문진을 가장 먼저 합니다.
+진찰은 의사가 하는 동작 문장이어야 하며("지남력을 확인하겠습니다"), 환자에게 시키는 말("오늘 날짜를 말씀해 주세요")은 진찰로 인정되지 않고 턴만 씁니다.
 진찰 문장에 '~하고', '~보고'로 동작을 이어 붙이면 거절되어 턴만 쓰입니다. 좋은 예: "갑상선을 만져 크기를 확인하겠습니다". 나쁜 예: "목을 살펴보고 갑상선을 만져보겠습니다".
 예선이므로 TEST는 금지입니다. 검사 계획은 최종 P.tests에 적습니다.
 미확인/UNKNOWN/자료 없음은 음성이나 정상이 아닙니다. 같은 질문을 반복하지 말고 다른 정보로 진행합니다.
@@ -172,7 +177,7 @@ def fit_to_limit(content):
     return (questions or fitting or [''])[-1]
 
 
-def next_step(client, session, transcript, turns_left, references='', plan=None, covered=None):
+def next_step(client, session, transcript, turns_left, references='', plan=None, covered=None, claim=None):
     """다음 행동 하나. 형식이 틀리면(빈 답, JSON 아님, 30자 초과) 바로 다시 묻고, 세 번 모두 틀리면 None."""
     request = situation(session, transcript) + f'\n\n남은 턴: {turns_left}'
     if turns_left <= 10:
@@ -180,6 +185,12 @@ def next_step(client, session, transcript, turns_left, references='', plan=None,
     left = remaining_numbered(plan, transcript, covered or ()) if plan else []
     if left:
         request += '\n아직 안 한 필수 항목(다음 행동은 이 중에서 고르세요): ' + ', '.join(f'{n}. {name}' for n, name in left[:6])
+    exams = exams_done(transcript)
+    if exams < MIN_EXAMS and ((plan and not left) or turns_left <= EXAM_PHASE_TURNS):
+        request += (f'\n진찰이 {exams}회뿐입니다. 문진을 줄이고 증상과 관련된 신체 진찰을 요청하세요. '
+                    f'후보: {EXAM_MENU}. 예: "심장 소리를 청진하겠습니다"')
+    elif plan and not left:
+        request += '\n필수 항목과 진찰을 모두 마쳤습니다. 꼭 필요한 추가 확인이 없으면 DONE을 선택하세요.'
     request += '\n다음 행동:'
     if references:
         request += '\n\n' + references
@@ -198,8 +209,8 @@ def next_step(client, session, transcript, turns_left, references='', plan=None,
             if held:
                 transcript.append(f'(알림: 질문은 한 번에 하나만 합니다. 보류한 질문: {held})')
             number = step.get('item')
-            if covered is not None and plan and action != 'DONE' and type(number) is int and 1 <= number <= len(plan):
-                covered.add(number)
+            if claim is not None and plan and action != 'DONE' and type(number) is int and 1 <= number <= len(plan):
+                claim['item'] = number   # counted only once the action has actually been accepted
             return action, content
         request += f'\n(직전 출력은 형식에 맞지 않았습니다. {MAX_CHARS}자 이내의 JSON 하나만 출력하세요.)'
     return None
@@ -249,6 +260,10 @@ def remaining_numbered(plan, transcript, covered=()):
     done = ' '.join(line for line in transcript if re.match(r'턴 \d+ (의사:|진찰\()', line))
     return [(n, item['name']) for n, item in enumerate(plan, 1)
             if n not in covered and not any(word in done for word in item['kw'])]
+
+
+def exams_done(transcript):
+    return sum(1 for line in transcript if re.match(r'턴 \d+ 진찰\(', line))
 
 
 def remaining_items(plan, transcript, covered=()):
@@ -333,7 +348,7 @@ def consult(client, model):
     transcript, turns_left, refused = [], min(limit, MAX_TURNS, session['turns_remaining']), 0
     attempted = set()
     references, hint, retrieved_at, nudges, fallbacks = '', '', -1, 0, 0
-    covered = set()
+    covered, claim = set(), {}
     age = patient_age(session)
     reserve = min(EXPLAIN_TURNS, turns_left // 4)  # turns kept for the closing explanation
     plan = []
@@ -349,7 +364,8 @@ def consult(client, model):
             if len(attempted) % 5 == 0 and refused == 0 and retrieved_at != len(attempted):
                 references, retrieved_at = retrieve(client, session, transcript, model), len(attempted)
                 hint = step_hint(model) if references else ''
-            step = next_step(client, session, transcript, turns_left, hint if LIGHT_STEPS else references, plan, covered)
+            claim.clear()
+            step = next_step(client, session, transcript, turns_left, hint if LIGHT_STEPS else references, plan, covered, claim)
         except NovaError:
             break  # 호출 한도·계속된 장애: 지금까지의 기록으로 마무리합니다.
         if step is None:
@@ -399,6 +415,8 @@ def consult(client, model):
             transcript.append(f'(알림: {exc.code}, 1턴 사용. {hint})')
             continue
         refused = 0
+        if claim.get('item'):
+            covered.add(claim['item'])
         turns_left = min(turns_left - 1, reply.get('turns_remaining', turns_left))
     if isinstance(model, dict) and plan:
         model['visit_plan']['left_undone'] = remaining_items(plan, transcript, covered)
