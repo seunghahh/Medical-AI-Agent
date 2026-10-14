@@ -131,6 +131,19 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(spoken, ['과거에 앓은 병이 있나요?'])
         self.assertIsNotNone(sim.record)  # the record was still submitted
 
+    def test_the_classic_record_call_sees_the_whole_conversation_including_the_closing(self):
+        session = {'initial': {'opening': '배가 아파요', 'vital_signs': '미제공'}}
+        transcript = ['턴 1 의사: 언제부터 아팠나요?', '환자: 어제요', '턴 2 의사(설명): 검사로 확인하겠습니다.', '환자: 네, 부탁드려요']
+        def shown(style):
+            sim = simulator(); sim.doctor = Endpoint([NOTE])
+            with patch.object(run, 'RECORD_STYLE', style):
+                run.write_record(LocalClient(sim), session, transcript)
+            return json.dumps(sim.doctor.messages, ensure_ascii=False)
+        self.assertIn('네, 부탁드려요', shown('classic'))
+        self.assertNotIn('네, 부탁드려요', shown('concise'))
+        self.assertIn('요약', shown('concise'))
+        self.assertNotIn('요약', shown('classic'))
+
     def test_rag_can_be_switched_off_for_a_comparison_run(self):
         with patch.dict('os.environ', {'NOVA_RAG': '0'}):
             self.assertIsNone(run.prepare()['rag'])

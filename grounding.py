@@ -92,8 +92,11 @@ def sources(session, transcript):
     return items
 
 
-def render(item):
-    """One compact line for an observation: what was asked, what came back, and where it came from."""
+def render(item, verbose=False):
+    """One compact line for an observation: what was asked, what came back, and where it came from.
+    verbose=True is the original layout ("[turn1] 질문/요청: ..." over two lines) that scored best so far."""
+    if verbose:
+        return f'[{item["id"]}] ' + (f'질문/요청: {item["question"]}\n답변: ' if item['question'] else '') + item['value']
     value = item['value'].replace('\n', ' / ')
     body = f'{item["question"]} → {value}' if item['question'] else value
     return f'- {body} ({label(item["id"])})'
@@ -130,18 +133,19 @@ def record_sources(items):
     return shown
 
 
-def source_record(items, plan=None):
+def source_record(items, plan=None, classic=False):
     """S and O copied from the observations. `plan` (already validated) only chooses which opening sentences are the
     chief complaint and supplies a short history summary; every other word comes from what the patient said."""
     plan = plan or {}
     note = empty_record()
     opening = items[0]
-    note['S']['cc'] = plan.get('cc') or render(opening)
+    render_item = (lambda item: render(item, True)) if classic else render
+    note['S']['cc'] = plan.get('cc') or render_item(opening)
     buckets = {'pmh': [], 'fh': [], 'sh': [], 'ros': []}
     exams, hpi_lines = [], []
     for item in items[1:]:
         if item['kind'] == 'exam':
-            exams.append(render(item))
+            exams.append(render_item(item))
         elif item['kind'] == 'say':
             question = item['question']
             if re.search(r'가족|부모|어머니|아버지|family|mother|father', question, re.I):
@@ -152,13 +156,13 @@ def source_record(items, plan=None):
                 key = 'sh'
             else:
                 key = 'ros'
-                hpi_lines.append(render(item))
-            buckets[key].append(render(item))
+                hpi_lines.append(render_item(item))
+            buckets[key].append(render_item(item))
     if plan.get('hpi'):
         # A summary replaces the repeated Q/A in the history; the questions stay once, in ROS.
-        note['S']['hpi'] = plan['hpi'] + '\n' + render(opening)
+        note['S']['hpi'] = plan['hpi'] + '\n' + render_item(opening)
     else:
-        note['S']['hpi'] = '\n'.join([render(opening)] + hpi_lines)
+        note['S']['hpi'] = '\n'.join([render_item(opening)] + hpi_lines)
     for field, values in buckets.items():
         note['S'][field] = '\n'.join(values) or '미확인 (확보된 응답 없음)'
     if not any(re.search(r'알레르기|allerg', item['question'], re.I) for item in items if item['kind'] == 'say'):
@@ -229,9 +233,12 @@ def writing_plan(candidate, items, blocked):
     return plan
 
 
-def finalize(candidate, items):
+def finalize(candidate, items, classic=False):
+    """classic=True rebuilds the original record: the model only gives diagnosis, differential names and the plan, and the
+    assessment quotes the observations (no summary, interpreted evidence or reasons)."""
     blocked = []
-    note = source_record(items, writing_plan(candidate, items, blocked))
+    render_item = (lambda item: render(item, True)) if classic else render
+    note = source_record(items, {} if classic else writing_plan(candidate, items, blocked), classic)
     diagnosis = candidate.get('diagnosis', '')
     diagnosis = readable_ids(' '.join(diagnosis.split())) if isinstance(diagnosis, str) else ''
     if not diagnosis or len(diagnosis.encode()) > 500 or unsafe_generated(diagnosis, items):
@@ -240,7 +247,7 @@ def finalize(candidate, items):
     by_id = {i['id']: i for i in facts}
     # Assessment: interpreted bullets that cite their observations; if none survive the checks, the observations themselves.
     bullets = []
-    for entry in candidate.get('evidence', []) if isinstance(candidate.get('evidence'), list) else []:
+    for entry in candidate.get('evidence', []) if isinstance(candidate.get('evidence'), list) and not classic else []:
         if not isinstance(entry, dict):
             continue
         reason = unsupported_claim(entry.get('text'), entry.get('source_ids'), by_id, items)
@@ -248,7 +255,7 @@ def finalize(candidate, items):
             blocked.append({'field': 'A.evidence', 'reason': reason, 'rejected': entry})
         else:
             bullets.append(f'- {readable_ids(entry["text"].strip())} ({cite(entry["source_ids"])})')
-    body = '\n'.join(bullets[:8]) if bullets else '관찰 근거:\n' + '\n'.join(render(i) for i in facts)
+    body = '\n'.join(bullets[:8]) if bullets else '관찰 근거:\n' + '\n'.join(render_item(i) for i in facts)
     note['A']['evidence'] = '#1. ' + diagnosis + ' (추정)\n' + body
     differential = candidate.get('differential', [])
     if isinstance(differential, list):
@@ -260,14 +267,14 @@ def finalize(candidate, items):
             if not (isinstance(name, str) and name.strip() and not unsafe_generated(name, items)
                     and isinstance(ids, list) and ids and all(isinstance(i, str) and i.split('.')[0] in by_id for i in ids)):
                 continue
-            why = entry.get('reason')
+            why = None if classic else entry.get('reason')
             if isinstance(why, str) and why.strip():
                 problem = unsupported_claim(why, ids, by_id, items)
                 if not problem:
                     lines.append(f'r/o {readable_ids(name.strip())} : {readable_ids(why.strip())} ({cite(ids)})')
                     continue
                 blocked.append({'field': 'A.differential', 'reason': problem, 'rejected': entry})
-            lines.append(f'r/o {readable_ids(name.strip())} (가설)\n' + '\n'.join(render(by_id[i.split('.')[0]]) for i in dict.fromkeys(ids)))
+            lines.append(f'r/o {readable_ids(name.strip())} (가설)\n' + '\n'.join(render_item(by_id[i.split('.')[0]]) for i in dict.fromkeys(ids)))
         note['A']['differential'] = '\n'.join(lines)
     plans = candidate.get('P', {})
     if isinstance(plans, dict):

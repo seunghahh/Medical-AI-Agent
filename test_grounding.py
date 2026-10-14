@@ -125,6 +125,23 @@ class GroundingTests(unittest.TestCase):
         self.assertIn('식욕이 좋아졌어요', note['S']['ros'])
         self.assertNotIn('질문/요청', json.dumps(note, ensure_ascii=False))
 
+    def test_the_classic_record_rebuilds_the_original_layout(self):
+        candidate = {'diagnosis': '갑상선 기능 항진증', 'cc': ['opening.s1'],
+                     'hpi': {'text': '식욕 증가', 'source_ids': ['turn1']},
+                     'evidence': [{'text': '식욕 증가 시사', 'source_ids': ['turn1']}],
+                     'differential': [{'name': '갑상선염', 'reason': '이유가 있음', 'source_ids': ['turn2']}],
+                     'P': {'tests': 'TSH 검사'}}
+        note, diagnosis, blocked = finalize(candidate, self.items, classic=True)
+        self.assertIn('[turn1] 질문/요청: 식욕이 어떻게 되나요?\n답변: 식욕이 좋아졌어요', note['S']['ros'])
+        self.assertTrue(note['S']['cc'].startswith('[opening] 나는 32세 여자이다'))   # the whole opening, not a chosen sentence
+        self.assertFalse(note['S']['hpi'].startswith('요약'))
+        self.assertIn('관찰 근거:\n[opening]', note['A']['evidence'])                   # a dump of observations, no bullets
+        self.assertNotIn('이유가 있음', note['A']['differential'])                       # names only, then the quoted observation
+        self.assertIn('r/o 갑상선염 (가설)\n[turn2]', note['A']['differential'])
+        self.assertEqual(blocked, [])
+        concise, _, _ = finalize(candidate, self.items)
+        self.assertIn('- 식욕 증가 시사 (T1)', concise['A']['evidence'])               # the default is unchanged
+
     def test_internal_ids_in_plans_are_shown_as_citations(self):
         note, _, _ = finalize({'diagnosis': '가설', 'P': {'tests': 'TSH 검사(근거: turn2, vitals, opening.s1, turn12)'}}, self.items)
         self.assertIn('(근거: T2, 활력징후, 첫 진술, T12)', note['P']['tests'])

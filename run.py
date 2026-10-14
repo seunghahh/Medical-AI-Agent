@@ -38,6 +38,7 @@ MIN_EXAMS = 4          # 문진을 마친 뒤에도 진찰이 이보다 적으�
 EXAM_PHASE_TURNS = 24  # 남은 턴이 이 이하인데 진찰이 부족하면 진찰을 요청한다
 EXAM_MENU = ('활력징후·전신 상태, 눈·구강·인두, 목(갑상선·림프절), 흉부 심음·폐음, 복부, 피부, '
              '사지 근력·반사·협조운동·보행, 기립성 혈압')
+RECORD_STYLE = 'classic'   # 'classic': the 10-13 20:56 record (best score so far); 'concise': summary + interpreted evidence
 LIGHT_STEPS = True   # 문진 중 행동 선택에는 지침 본문 대신 짧은 힌트만 붙인다(본문은 마무리 첫 말과 기록 작성에만)
 # 환자가 가장 걱정하는 점은 어느 증례에서나 묻는다(마무리 설명에서 그 걱정에 답하기 위해)
 CONCERN_ITEM = {'kind': '문진', 'name': '가장 걱정되는 점', 'kw': ['가장 걱정', '걱정되시는', '우려', '염려']}
@@ -87,6 +88,15 @@ JSON 객체 하나만 출력하세요. 모든 값은 한국어 문자열(줄바�
  "A": {"evidence": "#1. 주진단 다음 줄에 '- 근거 :' 수집한 사실", "differential": "'r/o 진단명 : 이유'를 한 줄씩"},
  "P": {"tests": "추가 검사 계획", "treatment": "치료", "disposition": "처치 결정", "follow_up": "추적 계획", "education": "환자 교육"},
  "diagnosis": "가장 가능성 높은 주진단 하나"}"""
+
+CLASSIC_RECORD_PROMPT = """초진 기록을 작성합니다. 제공된 관찰 근거로 주진단 가설과 향후 계획을 정하세요.
+기록은 한국어로 작성하되 의학 용어와 약물 이름은 영어를 사용할 수 있습니다.
+S/O와 관찰 근거 문장은 코드가 원문에서 작성하므로 출력하지 마세요. 문헌은 환자의 관찰이 아닙니다.
+의사 설명에 대한 '네'는 증상 확인이 아닙니다. 모르는 병력·음성 소견·나이·체중을 추측하지 마세요.
+P는 앞으로 제안하는 조치만 쓰며 환자 병력이나 이미 시행한 치료/검사처럼 쓰지 마세요.
+JSON 하나만: {"diagnosis":"주진단 하나", "differential":[{"name":"감별진단 이름만", "source_ids":["opening"]}],
+"P":{"tests":"추가 검사 계획", "treatment":"치료 계획", "disposition":"의뢰 등 계획", "follow_up":"추적 계획", "education":"교육 계획"}}
+감별진단 source_ids는 실제 제공된 관찰 ID만 쓰세요. 확인하지 않은 정상/음성 단정은 금지입니다."""
 
 GROUNDED_RECORD_PROMPT = """초진 기록을 작성합니다. 제공된 관찰 근거로 주진단 가설과 해석, 향후 계획을 정하세요.
 기록은 한국어로 간결한 병원 초진 기록 말투로 쓰되 의학 용어와 약물 이름은 영어를 사용할 수 있습니다.
@@ -487,15 +497,18 @@ def write_record(client, session, transcript, preliminary=True, references='', s
     if preliminary:
         items = sources(session, transcript)
         candidate = {}
+        classic = RECORD_STYLE == 'classic'
+        # classic: the model sees everything, including what was said in the closing, as in the original version
+        prompt, shown, room = (CLASSIC_RECORD_PROMPT, items, 4096) if classic else (GROUNDED_RECORD_PROMPT, record_sources(items), 6000)
         for _ in range(3):
             try:
-                candidate = parse_json(ask_doctor(client, GROUNDED_RECORD_PROMPT,
-                    '관찰 근거\n' + json.dumps(record_sources(items), ensure_ascii=False) + '\n\n' + references, 6000)) or {}
+                candidate = parse_json(ask_doctor(client, prompt,
+                    '관찰 근거\n' + json.dumps(shown, ensure_ascii=False) + '\n\n' + references, room)) or {}
             except NovaError:
                 break
             if isinstance(candidate.get('diagnosis'), str) and candidate['diagnosis'].strip():
                 break
-        note, diagnosis, blocked = finalize(candidate, items)
+        note, diagnosis, blocked = finalize(candidate, items, classic)
         if state is not None:
             state['grounding'] = {'sources': items, 'blocked': blocked,
                                   'mode': 'verbatim-observations; generated-assessment-and-plans'}
