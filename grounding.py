@@ -66,12 +66,14 @@ def sources(session, transcript):
              {'id': 'vitals', 'kind': 'exam', 'question': '시작 활력징후', 'raw': initial['vital_signs']}]
     question = None
     for line in transcript:
-        match = re.match(r'턴 (\d+) 의사: (.*)', line, re.S)
+        match = re.match(r'턴 (\d+) 의사(\(설명\))?: (.*)', line, re.S)
         if match:
-            question = match.groups()
+            turn, closing, content = match.groups()
+            question = (turn, content, bool(closing))
         elif line.startswith('환자: ') and question:
-            turn, content = question
-            asked = asks(content)
+            turn, content, closing = question
+            # Lines of the closing explanation are never observations, even when they end in a question.
+            asked = asks(content) and not closing
             consent = re.search(r'검사|치료|처방|의뢰|복용', content) and re.search(
                 r'할까요|하시겠|하실래|하겠습니다|진행|요청|추가|검사\?$', content)
             # shortcut: Intent uses wording patterns; keep Q/A provenance for ambiguous questions.
