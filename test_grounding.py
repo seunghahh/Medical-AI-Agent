@@ -27,7 +27,7 @@ class GroundingTests(unittest.TestCase):
                      'P': {'education': '42세이므로 주의', 'tests': '갑상선 기능 검사 계획'}}
         note, diagnosis, blocked = finalize(candidate, self.items)
         rendered = json.dumps(note, ensure_ascii=False)
-        for value in ('32세', '56kg', '7kg', '49kg', '미확인', '미시행', '식욕이 좋아졌어요'):
+        for value in ('서른두 살', '오십육 키로그람', '칠 키로그람', '사십구 키로그람', '미확인', '미시행', '식욕이 좋아졌어요'):
             self.assertIn(value, rendered)
         for value in ('42세', '14 kg', '알레르기 (-)', '흡연 (-)', '발열 없음', '네, 알겠습니다'):
             self.assertNotIn(value, rendered)
@@ -67,7 +67,7 @@ class GroundingTests(unittest.TestCase):
         with patch.object(run, 'ask_doctor', return_value='{"selections":[]}'):
             run.retrieve(None, self.session, [], state)
             run.retrieve(None, self.session, ['Patient: I have fatigue.'], state, preliminary=False)
-        self.assertIn('32세', queries[0])
+        self.assertIn('서른두 살', queries[0])
         self.assertEqual(queries[1], 'Patient: I have fatigue.')
         self.assertTrue(all(entry['fallback'] for entry in state['retrievals']))
 

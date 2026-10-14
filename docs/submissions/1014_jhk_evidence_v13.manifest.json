@@ -1,0 +1,15 @@
+{
+  "candidate": "candidate",
+  "zip": "1014_jhk_evidence_v13.zip",
+  "bytes": 34513,
+  "zip_sha256": "3fca88170e6fa2998de5f7e250a152e8bcf87309dc437cfe7295a97e29dee7da",
+  "files": {
+    "run.py": "944149e0b2917ae8e362989784513621a05dcbc677fecf07e43d85eed975dec3",
+    "rag.py": "7a4d82b749c653f8b96df8f5901e290abdedb2161260527180dc21c528ee3cb3",
+    "grounding.py": "137ffd8ba1d1cbffadfbabc759b0f4f3674fe4d5ed90a6308cf9293d57b26e44",
+    "nova_sdk.py": "bb8828548d0c8d03749cc7cb537c4eed639200b2302784dae5bd6cf79a932e7d",
+    "requirements.txt": "d2b2ed1aed141db4390d0e782a7fc25b97328de2828b70958d99c145ea1d0843",
+    "SOURCES.md": "ad46443c9146101fed5f4667766d8df1cad88cf42e26b227ed46e872ca724433"
+  },
+  "source_matches_zip": true
+}

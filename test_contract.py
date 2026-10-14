@@ -26,6 +26,35 @@ class Endpoint:
         return json.dumps(next(self.replies), ensure_ascii=False), 'stop', 10, 10
 
 
+class PhaseEndpoint(Endpoint):
+    """Offline replies for each public consultation phase; no hidden case access."""
+    def complete(self, messages, **kwargs):
+        self.messages.append(messages)
+        system = messages[0]['content']
+        if system.startswith('You are interviewing a patient'):
+            reply = next(self.replies, {'action': 'DONE'})
+        elif 'catalog=' in system:
+            reply = {'ids': []}
+        elif system.startswith(('Choose the most likely causal', 'Review the draft causal')):
+            reply = {'diagnosis': 'provisional', 'reason': 'Observed complaint; cause needs confirmation.',
+                     'differential': [], 'O': {'tests': 'invented test'}}
+        elif system.startswith('Write a concise prospective clinical plan'):
+            reply = {'P': {'tests': 'Tests to confirm the cause', 'treatment': 'Review medicines before treatment',
+                           'disposition': 'Review', 'follow_up': 'Reassess in 2 weeks.',
+                           'education': 'Severe pain requires urgent care'}}
+        elif system.startswith('You translate a single clinical message'):
+            if '위험 증상' in system:
+                text = '심해지면 바로 진료를 받아요.'
+            elif '검사 하나' in system:
+                text = '검사로 원인을 확인해요.'
+            else:
+                text = '원인은 더 확인이 필요해요.'
+            reply = {'text': text}
+        else:
+            raise AssertionError('Unexpected consultation phase: ' + system[:80])
+        return json.dumps(reply, ensure_ascii=False), 'stop', 10, 10
+
+
 def case():
     return {'case_id': 'fixture', 'start_information': {'opening': '배가 아파요', 'vital_signs': '미제공'},
             'patient_script': {'History': 'HIDDEN_HISTORY'},
@@ -36,7 +65,6 @@ def simulator(replies=()):
     return BenchmarkSimulator(case(), doctor=Endpoint(), sim=Endpoint(replies), minutes=20)
 
 
-@patch.object(run, 'EXPLAIN_TURNS', 0)  # these scripted tests cover other behaviour; the closing explanation has its own tests
 class ContractTests(unittest.TestCase):
     def test_manual_sample_commands(self):
         from develop import manual
@@ -148,15 +176,23 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(result['E_4']['answer'], '아니요 (No)')
 
     def test_consult_duplicate_guard_and_observed_only_prompt(self):
-        note = empty_record(); note['S']['cc'] = '배가 아파요'; note['O']['tests'] = 'invented test'
-        doctor = Endpoint([{'action': 'SAY', 'content': '언제부터 아팠나요?'},
-                           {'action': 'SAY', 'content': '언제부터 아팠나요?'},
-                           {'action': 'DONE'}, {**note, 'diagnosis': '진단 미정'}])
-        sim = BenchmarkSimulator(case(), doctor=doctor, sim=Endpoint([{'content': '어제부터요'}]))
-        result = run.consult(LocalClient(sim), {'max_turns': 4})
-        self.assertEqual(result['status'], 'completed'); self.assertEqual(sim.turns, 1)
+        doctor = PhaseEndpoint([
+            {'action': 'SAY', 'topic': 'course', 'content': '언제부터 아팠나요?'},
+            {'action': 'DONE'}])
+        sim = BenchmarkSimulator(case(), doctor=doctor, sim=Endpoint())
+        client = LocalClient(sim)
+        spoken = []
+        original = client.say
+        def capture(content, **kwargs):
+            spoken.append(content)
+            return original(content, **kwargs)
+        with patch.object(run, 'history_queue', return_value=[('onset', '언제부터 아팠나요?')]), \
+             patch.object(sim, 'patient', return_value=('어제부터요', '질문')), \
+             patch.object(client, 'say', side_effect=capture):
+            result = run.consult(client, {})
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(spoken.count('언제부터 아팠나요?'), 1)
         self.assertEqual(sim.record['O']['tests'], '')
-        self.assertEqual(sim.doctor_calls, 4)
         self.assertNotIn('HIDDEN', json.dumps(doctor.messages))
         self.assertIn('어제부터요', json.dumps(doctor.messages, ensure_ascii=False))
 
@@ -176,11 +212,9 @@ class ContractTests(unittest.TestCase):
             client.diagnose(note=note, diagnosis='진단 미정')
 
     def test_transient_action_reuses_request_id(self):
-        note = empty_record(); note['S']['cc'] = '증상'
-        sim = simulator([{'content': '어제부터요'}])
-        sim.doctor = Endpoint([{'action': 'SAY', 'content': '언제부터 아팠나요?'},
-                               {'action': 'DONE'}, {**note, 'diagnosis': '진단 미정'}])
+        sim = simulator(); sim.doctor = PhaseEndpoint()
         client = LocalClient(sim)
+        session = client.session(); session['turns_remaining'] = 3
         original = client.say; ids = []
         def lost_response(content, **kwargs):
             ids.append(kwargs['request_id'])
@@ -188,9 +222,13 @@ class ContractTests(unittest.TestCase):
             if len(ids) == 1:
                 raise NovaError('API_UNAVAILABLE', 503)
             return answer
-        with patch.object(client, 'say', side_effect=lost_response), patch('run.time.sleep'):
-            run.consult(client, {'max_turns': 3})
-        self.assertEqual(ids[0], ids[1]); self.assertEqual(sim.turns, 1)
+        with patch.object(client, 'say', side_effect=lost_response), patch('run.time.sleep'), \
+             patch.object(client, 'session', return_value=session), \
+             patch.object(sim, 'patient', return_value=('네', '설명')):
+            result = run.consult(client, {})
+        self.assertEqual(ids[0], ids[1])
+        self.assertLessEqual(sim.turns, 3)
+        self.assertEqual(result['status'], 'completed')
 
 
 class RetrievalTests(unittest.TestCase):

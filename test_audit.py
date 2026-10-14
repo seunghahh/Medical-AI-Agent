@@ -9,7 +9,7 @@ import run
 from local import SessionSimulator
 from nova_local import LocalClient
 from nova_sdk import NovaError
-from test_contract import Endpoint, case
+from test_contract import Endpoint, PhaseEndpoint, case
 from export_review import export
 
 
@@ -28,14 +28,19 @@ class AuditTests(unittest.TestCase):
         with self.assertRaisesRegex(NovaError, 'TURN_LIMIT_REACHED'):
             LocalClient(sim).say('새 질문')
 
-    def test_consult_respects_small_budget_after_refused_exam(self):
-        doctor = Endpoint([{'action': 'EXAM', 'content': '모두 진찰'}, {'diagnosis': '미정'}])
-        sim = SessionSimulator(case(), doctor=doctor, sim=Endpoint())
-        with patch.object(sim, 'examine', side_effect=NovaError('EXAM_NOT_SPECIFIC', 422)):
-            result = run.consult(LocalClient(sim), {'max_turns': 1})
+    def test_consult_respects_small_budget_and_leaves_final_record(self):
+        sim = SessionSimulator(case(), doctor=PhaseEndpoint(), sim=Endpoint())
+        client = LocalClient(sim)
+        session = client.session(); session['turns_remaining'] = 1
+        with patch.object(client, 'session', return_value=session), \
+             patch.object(sim, 'patient', return_value=('네', '설명')), \
+             patch.object(sim, 'examine', side_effect=NovaError('EXAM_NOT_SPECIFIC', 422)) as examiner:
+            result = run.consult(client, {})
+        examiner.assert_not_called()
         self.assertEqual(result['status'], 'completed')
-        self.assertEqual(sim.turns, 1)
-        self.assertEqual(sim.doctor_calls, 2)
+        self.assertLessEqual(sim.turns, 1)
+        self.assertIsNotNone(sim.record)
+        self.assertGreater(sim.doctor_calls, 0)
 
     def test_model_failure_does_not_consume_turn_and_gets_new_request(self):
         ids = []

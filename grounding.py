@@ -82,7 +82,7 @@ def sources(session, transcript):
                 items.append({'id': f'turn{turn}', 'kind': 'exam', 'question': content, 'raw': answer})
             question = None
     for item in items:
-        item['value'] = normalize_measurements(item['raw'])
+        item['value'] = unicodedata.normalize('NFC', item['raw'])
     return items
 
 

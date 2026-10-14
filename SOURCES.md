@@ -1,3 +1,17 @@
+# 2026-10-14 candidate disclosure (supersedes historical runtime descriptions below)
+
+This submission starts from jhk-test commit defaf716482e60bc81ce187a811f670b43fa49b3. It uses a bounded history queue, generic medication review triggered by the opening, age-appropriate birth/development or reproductive history when applicable, focused model-selected history and physical examinations, a separate preliminary diagnostic judgment and prospective plan, a bounded definition/evidence review of the working diagnosis, and short Korean explanations from that plan. Treatment communication uses a fixed review-first sentence, and numeric follow-up intervals are rendered directly from P.follow_up; these messages do not ask the model to invent treatment or timing. Treatment is explicitly conditional on diagnosis and safety review; a dose-containing or missing treatment field uses a conservative review-first fallback instead of a potentially unsafe model rewrite. Runtime decisions use only returned observations and the designated client.chat interface. No case IDs, reference diagnoses, simulator files, or local test adapters are bundled.
+
+The unchanged baseline rag.py builds the provided guideline index. RAG is used only once after the draft diagnosis: the draft labels and rationale retrieve up to three definition passages for the bounded diagnostic review. No RAG is used during history selection or treatment planning. Retrieved text is general clinical knowledge, never patient evidence. Logs retain source metadata and locations, not redistributed guideline text. grounding.py preserves raw observation text in NFC instead of rewriting Korean numeric phrases. Separate deterministic hints convert unambiguous Korean age/height/weight spans to digits for reasoning; the quoted observations are not rewritten. S/O and A evidence remain source-bound; generated A/P still require clinical review. Dose-pattern checks are limited guards, not clinical verification. Patient closing replies are recorded verbatim, not interpreted as verified understanding.
+
+Local development used gpt-oss:20b through loopback Ollama with no external Doctor API. The submission still calls the competition SDK; the local model/harness is not packaged. Three public development cases were repeatedly inspected, so local results are not held-out performance or official scores. No training or fine-tuning was performed.
+
+Research context: Contextual Experience Replay (ACL 2025, https://aclanthology.org/2025.acl-long.694/) and HiAgent (ACL 2025, https://aclanthology.org/2025.acl-long.1575/). Failure feedback and explicit task-state tracking are engineering adaptations, not full reproductions of either method. ProCoT is not used. Paper results are not claims about this submission.
+
+## Historical baseline source disclosure
+
+The following inherited text documents the baseline's provenance. Its runtime retrieval, normalization and model descriptions do not override the variant disclosure above.
+
 # Sources and processing disclosure
 
 Verified against the local official downloads and https://nova.snubhai.org/docs/ on 2026-10-11; SDK and guideline retrieval updated on 2026-10-13.

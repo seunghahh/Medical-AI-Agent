@@ -1,4 +1,4 @@
-"""Consultation flow: required history before DONE, and the closing explanation to the patient."""
+"""Required history, turn budgeting and actual patient explanations."""
 import json
 import unittest
 from unittest.mock import patch
@@ -6,76 +6,70 @@ from unittest.mock import patch
 import run
 from grounding import asks, sources
 from nova_local import LocalClient
-from test_contract import Endpoint, simulator
-
-NOTE = {'diagnosis': '진단 미정'}
-EXPLANATION = {'messages': ['걱정 많으셨겠어요.', '검사로 원인을 확인하겠습니다.', '심해지면 바로 오셔야 해요.']}
+from nova_sdk import NovaError
+from test_contract import Endpoint, PhaseEndpoint, simulator
 
 
-def say(text):
-    return {'action': 'SAY', 'content': text}
-
-
-def run_consult(replies, max_turns, patient=20):
-    sim = simulator([{'content': '네, 그래요'}] * patient)
-    sim.doctor = Endpoint(replies)
+def run_consult(max_turns, fail_explanation=False):
+    sim = simulator(); sim.doctor = PhaseEndpoint()
     client = LocalClient(sim)
+    session = client.session(); session['turns_remaining'] = max_turns
     spoken = []
     original = client.say
-    client.say = lambda content, **kw: spoken.append(content) or original(content, **kw)
-    run.consult(client, {'max_turns': max_turns})
-    return sim, spoken
+    def capture(content, **kwargs):
+        spoken.append(content)
+        return original(content, **kwargs)
+    with patch.object(client, 'session', return_value=session), \
+         patch.object(client, 'say', side_effect=capture), \
+         patch.object(sim, 'patient', return_value=('미확인: 원자료에 해당 정보가 없습니다.', '응답')):
+        if fail_explanation:
+            with patch.object(run, 'patient_explanations', side_effect=NovaError('PROVIDER_UNAVAILABLE', 503)):
+                result = run.consult(client, {})
+        else:
+            result = run.consult(client, {})
+    return sim, spoken, result
 
 
 class FlowTests(unittest.TestCase):
-    def test_missing_topics_reads_the_doctors_questions(self):
-        self.assertEqual(run.missing_topics([]), ['과거력', '복용 약·알레르기', '가족력', '사회력', '신체 진찰'])
-        transcript = ['턴 1 의사: 과거에 앓은 병이 있나요?', '환자: 없어요', '턴 2 의사: 드시는 약이나 알레르기는요?', '환자: 없어요',
-                      '턴 3 의사: 가족 중에 아픈 분 계세요?', '환자: 없어요', '턴 4 의사: 수술 받은 적 있나요?', '환자: 없어요',
-                      '턴 5 진찰(복부 촉진): 압통 없음']
-        self.assertEqual(run.missing_topics(transcript), ['사회력'])  # '수술' must not count as drinking
-        self.assertEqual(run.missing_topics(transcript + ['턴 6 의사: 담배나 술을 하시나요?']), [])
+    def test_fixed_history_precedes_model_done_and_actual_explanations(self):
+        sim, spoken, result = run_consult(20)
+        required = [q for _, q in run.history_queue(sim.public_session()['initial']['opening'])]
+        self.assertEqual(spoken[:len(required)], required)
+        closing = spoken[len(required):]
+        self.assertEqual(len(closing), 5)
+        self.assertTrue(all(not asks(text) for text in closing))
+        self.assertIn('2주 뒤 결과와 경과를 확인해요.', closing)
+        self.assertEqual(result['status'], 'completed')
+        self.assertNotIn('HIDDEN', json.dumps(sim.doctor.messages))
+        self.assertIn('[실제 설명/', sim.record['P']['education'])
 
-    def test_done_is_sent_back_until_history_is_taken_then_patient_gets_an_explanation(self):
-        questions = ['과거에 앓은 병이 있나요?', '복용하는 약이나 알레르기는요?', '가족 중에 같은 병이 있나요?', '담배나 술을 하시나요?']
-        replies = [{'action': 'DONE'}, *map(say, questions), {'action': 'DONE'}, {'action': 'DONE'}, EXPLANATION, NOTE]
-        sim, spoken = run_consult(replies, max_turns=12)
-        self.assertEqual(spoken, questions + EXPLANATION['messages'])
-        self.assertEqual(sim.turns, 7)
-        self.assertIn('확인할 항목', json.dumps(sim.doctor.messages, ensure_ascii=False))
+    def test_small_budget_reserves_closing_and_final_record(self):
+        sim, spoken, result = run_consult(8)
+        self.assertLessEqual(sim.turns, 8)
+        self.assertEqual(len(spoken), 5)
+        self.assertTrue(all(not asks(text) for text in spoken))
+        self.assertEqual(result['status'], 'completed')
 
-    def test_gathering_stops_early_enough_to_leave_turns_for_the_explanation(self):
-        replies = [*[say(f'{n}번째 증상이 어떤가요?') for n in range(6)], EXPLANATION, NOTE]
-        sim, spoken = run_consult(replies, max_turns=8)
-        self.assertEqual(sim.turns, 8)
-        self.assertEqual(spoken[-2:], EXPLANATION['messages'][:2])
+    def test_invalid_explanation_is_repaired_without_asking_a_question(self):
+        sim = simulator()
+        sim.doctor = Endpoint([{'text': '증상이 더 있나요?'}, {'text': '검사로 원인을 확인해요.'}, {'text': ''}])
+        note = {'P': {'tests': 'Check the cause', 'treatment': '', 'follow_up': '', 'education': ''}}
+        output = run.patient_explanations(LocalClient(sim), note, '')
+        self.assertEqual(output, [('next', '검사로 원인을 확인해요.')])
+        self.assertTrue(all(len(text) <= run.MAX_CHARS and not asks(text) for _, text in output))
 
-    def test_explanation_never_asks_a_question(self):
-        doctor = Endpoint([{'messages': ['증상이 더 있나요?', '또 궁금한 게 있으세요?']}, {'messages': ['검사로 확인하겠습니다.', '질문 있으세요?']}])
-        sim = simulator(); sim.doctor = doctor
-        self.assertEqual(run.explanation_messages(LocalClient(sim), sim.public_session(), [], 3), ['검사로 확인하겠습니다.'])
-        junk = Endpoint([{'messages': ['x' * 31]}, {'nothing': 1}])
-        sim.doctor = junk
-        fallback = run.explanation_messages(LocalClient(sim), sim.public_session(), [], 3)
-        self.assertEqual(fallback, list(run.FALLBACK_EXPLANATION))
-        self.assertTrue(all(0 < len(m) <= run.MAX_CHARS and not asks(m) for m in run.FALLBACK_EXPLANATION))
-
-    def test_patient_replies_to_the_explanation_are_not_observations(self):
+    def test_patient_replies_to_explanation_are_not_observations(self):
         session = {'initial': {'opening': '배가 아파요', 'vital_signs': '미제공'}}
-        transcript = []
-        for number, message in enumerate(EXPLANATION['messages'], 1):
-            transcript += [f'턴 {number} 의사: {message}', '환자: 네, 알겠습니다']
-        kinds = [item['kind'] for item in sources(session, transcript)[2:]]
-        self.assertEqual(kinds, ['communication'] * 3)
+        transcript = ['턴 1 의사: 검사로 원인을 확인해요.', '환자: 네, 알겠습니다']
+        self.assertEqual([item['kind'] for item in sources(session, transcript)[2:]], ['communication'])
 
-    def test_a_broken_explanation_does_not_lose_the_record(self):
-        replies = [say('과거에 앓은 병이 있나요?'), {'action': 'DONE'}, {'action': 'DONE'}, {'action': 'DONE'}, NOTE]
-        with patch.object(run, 'explain', side_effect=RuntimeError('boom')):
-            sim, spoken = run_consult(replies, max_turns=12)
-        self.assertEqual(spoken, ['과거에 앓은 병이 있나요?'])
-        self.assertIsNotNone(sim.record)  # the record was still submitted
+    def test_failed_explanation_does_not_lose_final_record(self):
+        sim, spoken, result = run_consult(20, fail_explanation=True)
+        self.assertIsNotNone(sim.record)
+        self.assertEqual(result['status'], 'completed')
+        self.assertTrue(all(asks(text) for text in spoken))
 
-    def test_rag_can_be_switched_off_for_a_comparison_run(self):
+    def test_rag_can_be_switched_off(self):
         with patch.dict('os.environ', {'NOVA_RAG': '0'}):
             self.assertIsNone(run.prepare()['rag'])
 
