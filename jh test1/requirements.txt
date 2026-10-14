@@ -1,0 +1,2 @@
+# NOVA SDK and starter use only the Python standard library.
+# Extra packages: one PyPI package per line as name==version (wheels only; no URLs, Git or other indexes).
