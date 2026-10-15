@@ -32,3 +32,15 @@ Original benchmark license files remain in the separately supplied `nova-benchma
 - Source-bound preliminary SOAP: `grounding.py` copies public opening/vitals and returned question-answer/exam observations into S/O and assessment evidence, normalizing recognized Korean age/weight/height numbers while retaining raw text in audit files. Unasked history remains unknown. Doctor-generated diagnosis/differential labels are hypotheses and P is explicitly prospective. Simple number/negative-claim guards are not comprehensive clinical verification. ACI record-only generation is unchanged.
 
 - GitHub demo: accelerated replay of selected events from the public C10 local run on 2026-10-11 (old 20-minute setting), with the same local UI. No guideline body or new clinical performance result is included.
+
+## yoon_test2_submission (2026-10-14)
+Based on main 706383bc513fae0e65e2090805b98ad8870b68e1. Adds an early bounded question batch, expanded missing-history priorities, and actual patient understanding/concern feedback. No new dataset, training, medical guideline transformation, or model dependency. Existing retrieval, grounding, SDK and treatment safety logic retained. Official format/evaluation checked at https://nova.snubhai.org/docs/ and https://nova.snubhai.org/evaluation/. No official score claim.
+
+
+## yoon_test3_submission (2026-10-14)
+Based on yoon_test2_submission. Adds observation-updated bounded question batches, broader history topics, up to five relevant examinations, more explicit test/follow-up planning, empty-plan-field recovery, and a single-call multi-sentence patient explanation renderer. Diagnostic prompts, treatment safety function, retrieval implementation, observation grounding and SDK are retained. No case IDs, sample answers, hidden patient scripts, weights or new dataset are bundled. Public sample files and locally saved example records were inspected for development context only; runtime consumes only authorized session observations and server-provided general guidelines. No official score claim. Sources: https://nova.snubhai.org/docs/ and https://nova.snubhai.org/evaluation/.
+
+
+## yoon_test4_submission (2026-10-15)
+Based on yoon_test3_submission. Adds source-checked basic-history coverage skipping with subject guards; focused positive-history followups; separate question detection for spoken explanations; mechanism and polite safety advice retention; acknowledgement-call suppression; bounded speech fallback without per-field model cascades; compact observation/concern inputs. Diagnostic prompts, medication safety function, retrieval, grounding, SDK and dependencies retained. No new dataset, case-specific answer, training or weight. Tests use controlled fake endpoints; reported efficiency comparison is not an official score or clinical quality evaluation.
+
