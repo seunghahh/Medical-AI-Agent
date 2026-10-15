@@ -99,6 +99,12 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(got,[('review_1','식욕은 어떤가요?'),('review_2','잠은 잘 주무시나요?'),
                               ('review_3','목 앞이 붓거나 이물감이 있나요?')])
 
+    def test_a_plan_with_real_line_breaks_inside_strings_is_still_read(self):
+        # A real line break (not the two characters backslash-n) inside a JSON string, as the model writes it.
+        text='{"P":{"tests":"- TSH : confirm'+chr(10)+'- ECG : tachycardia","treatment":"x","disposition":"y","follow_up":"z","education":"w"}}'
+        self.assertEqual(run.parse_plan(text)['P']['tests'],'- TSH : confirm'+chr(10)+'- ECG : tachycardia')
+        self.assertEqual(run.parse_json(text)['P']['follow_up'],'z')
+
     def test_adults_get_chronic_family_and_work_history_but_children_do_not(self):
         adult=dict(run.history_queue('서른두 살 여자이고 체중이 줄었어요.'))
         self.assertTrue({'chronic','family_chronic','occupation'}<=set(adult))

@@ -98,7 +98,7 @@ def prepare():
 
 def parse_json(text):
     """모델 출력에서 첫 JSON 객체를 꺼냅니다(코드 블록이나 앞뒤 설명이 붙어도 됩니다)."""
-    decoder = json.JSONDecoder()
+    decoder = json.JSONDecoder(strict=False)   # models often put real line breaks inside strings
     for match in re.finditer(r'\{', text or ''):
         try:
             value, _ = decoder.raw_decode(text, match.start())
@@ -263,7 +263,7 @@ def parse_record(text):
             tail = tail[:-3].rstrip()
         for suffix in ('', '}'):
             try:
-                value = json.loads(tail + suffix)
+                value = json.loads(tail + suffix, strict=False)
             except ValueError:
                 continue
             if (isinstance(value, dict) and isinstance(value.get('diagnosis'), str)
@@ -483,7 +483,7 @@ def parse_plan(text):
     if tail.endswith('```'):tail=tail[:-3].rstrip()
     keys={'tests','treatment','disposition','follow_up','education'}
     for suffix in ('','}'):
-        try:value=json.loads(tail+suffix)
+        try:value=json.loads(tail+suffix,strict=False)
         except ValueError:continue
         if not isinstance(value,dict):continue
         plan=value.get('P')
@@ -703,9 +703,10 @@ REPLY_TASKS = {
     'summary': "Reflect back, in the patient's own words, their main symptoms and how long they have had them. Do not mention "
                'the plan, tests, treatment, reassurance, worry or feelings. Example style: 석 달 동안 살이 빠지셨군요.',
     'answer': 'Answer what the patient just asked or worried about, using only the plan. If they asked when, give the '
-              'follow-up time from the plan. If they asked how to manage or reduce something, give the safe direction the plan '
-              'states (for example changing it gradually with the doctor). If the plan does not cover it, say it will be '
-              'decided together with the doctor.'}
+              'follow-up time from the plan. If they asked which tests, name the first planned test and its purpose in plain '
+              'words (e.g. 피검사로 갑상샘 호르몬을 확인해요). If they asked how to manage or reduce something, give the safe '
+              'direction the plan states (for example changing it gradually). You are the doctor: never refer them to another '
+              '"담당의". If the plan does not cover it, say we will decide it together after the results.'}
 
 
 def similar(first, second):
