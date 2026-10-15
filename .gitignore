@@ -1,40 +1,10 @@
-# Private runs, full corpora and derived indexes
-/results/
-/.cache/
-/data/
-/guidelines/
-/nova-benchmarks-2026/
-*.sqlite3
-*.sqlite3-*
-*.db
-*.jsonl
-/review_bundle.md
-/data-inventory.json
-/original-source-hashes.json
-/live-clinic.jpg
-/graphify-out/
-
-# Credentials and local configuration
+__pycache__/
+*.py[cod]
+.venv/
+.cache/
+.ruff_cache/
+.ipynb_checkpoints/
 .env
 .env.*
 !.env.example
-*.pem
-*.key
-credentials*.json
-secrets*.json
-
-# Generated packages, model weights and environments
-/submission*.zip
-*.zip
-*.gguf
-*.safetensors
-*.pt
-*.pth
-.venv/
-venv/
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.DS_Store
-*.log
+results/
