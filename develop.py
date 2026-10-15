@@ -119,10 +119,10 @@ def main():
     finally:
         summary = save_result(simulator, out, started)
         summary.update(error=error, max_turns=args.max_turns, official_score=False)
-        (out / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+        (out / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
         if isinstance(state, dict):
-            (out / 'retrievals.json').write_text(json.dumps(state.get('retrievals', []), ensure_ascii=False, indent=2))
-            (out / 'grounding.json').write_text(json.dumps(state.get('grounding', {}), ensure_ascii=False, indent=2))
+            (out / 'retrievals.json').write_text(json.dumps(state.get('retrievals', []), ensure_ascii=False, indent=2), encoding='utf-8')
+            (out / 'grounding.json').write_text(json.dumps(state.get('grounding', {}), ensure_ascii=False, indent=2), encoding='utf-8')
             if state.get('rag'):
                 state['rag'].close()
         journal.emit('case_end', case_index=case['case_id'], completed=simulator.status == 'completed',
