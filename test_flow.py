@@ -140,18 +140,26 @@ class ClosingReplyTests(unittest.TestCase):
         self.assertTrue(all(len(m) <= run.MAX_CHARS for m in spoken))
         self.assertTrue(all(any(m.endswith(a) for a in asked) for m in prefixed))   # still one of the planned questions
 
-    def test_a_one_line_summary_comes_first_when_the_patient_told_us_enough(self):
+    def test_the_worry_line_is_the_only_lead_when_both_a_worry_and_other_answers_exist(self):
         queue = run.history_queue('배가 아파요')
-        said = {queue[0][1]: '약이 자꾸 늘어서 걱정돼요.', queue[1][1]: '석 달 전부터 살이 빠졌어요.'}
+        said = {queue[0][1]: '약이 자꾸 늘어서 걱정돼요.', queue[1][1]: '석 달 전부터 살이 빠졌어요.', queue[2][1]: '두근거림도 있어요.'}
         def answer(question):
-            for known in said:
-                if question.endswith(known):          # a question may carry a short empathy phrase in front
-                    return said[known]
-            return UNKNOWN
+            return next((said[known] for known in said if question.endswith(known)), UNKNOWN)
         sim, spoken = run_closing(answer)
         closing = spoken[len(queue):]
-        self.assertEqual(closing[:2], ['석 달 동안 살이 빠지셨군요.', '약 걱정을 함께 확인해 가요.'])
+        self.assertEqual(closing[0], '약 걱정을 함께 확인해 가요.')
+        self.assertNotIn('석 달 동안 살이 빠지셨군요.', spoken)               # no second, near-identical opener
+        self.assertEqual(sim.doctor.reply_calls, 1)
         self.assertEqual(closing[-1], run.INVITATION)
+
+    def test_a_one_line_summary_opens_the_closing_when_there_is_no_usable_worry(self):
+        queue = run.history_queue('배가 아파요')
+        said = {queue[1][1]: '석 달 전부터 살이 빠졌어요.', queue[2][1]: '두근거림도 있어요.'}
+        def answer(question):
+            return next((said[known] for known in said if question.endswith(known)), UNKNOWN)
+        sim, spoken = run_closing(answer)
+        self.assertEqual(spoken[len(queue)], '석 달 동안 살이 빠지셨군요.')
+        self.assertEqual(sim.doctor.reply_calls, 1)
 
     def test_no_summary_when_the_patient_told_us_too_little(self):
         sim, spoken = run_closing(lambda q: UNKNOWN)
@@ -293,3 +301,48 @@ class ClosingContentTests(unittest.TestCase):
         self.assertIn('may be used exactly as they said it', first[0]['content'])
         self.assertIn('스틸녹스를 먹어요', first[1]['content'])               # the cause call sees the patient's medication answer
         self.assertIn('금단', first[0]['content'])                              # and is told to use everyday words
+
+
+class GeneralTests(unittest.TestCase):
+    """Fixes found by running diseases other than the three samples."""
+
+    def test_ages_are_read_from_korean_english_and_months(self):
+        for text, expected in (('저는 서른두 살 여자이다.', 32.0), ('나는 62세 남자이다.', 62.0), ('35-year-old female. Double vision', 35.0),
+                               ('8-month-old boy. Crying', 8 / 12), ('생후 8개월 남아가 울어요.', 8 / 12), ('8개월 된 아기가 배가 불러요.', 8 / 12)):
+            self.assertAlmostEqual(run.age_in_years(text), expected, msg=text)
+        self.assertIsNone(run.age_in_years('3개월 전부터 살이 빠졌다.'))      # a duration, not an age
+        self.assertIsNone(run.age_in_years('배가 아파요'))
+
+    def test_an_infant_is_never_asked_about_smoking_or_drinking(self):
+        for opening in ('8-month-old boy. Crying', '생후 8개월 남아가 울어요.', '여섯 살 남자아이이다.'):
+            queue = dict(run.history_queue(opening))
+            self.assertNotIn('alcohol', queue, opening)
+            self.assertEqual(queue['smoking'], '가정에서 담배 연기 노출이 있나요?', opening)
+            self.assertIn('birth', queue, opening)
+        adult = dict(run.history_queue('35-year-old female. Double vision'))
+        self.assertIn('alcohol', adult)
+        self.assertIn('menstrual', adult)                                     # an adult woman, even when the opening is English
+
+    def test_no_exam_request_bundles_two_things_and_the_new_ones_fit_the_limit(self):
+        for key, phrase in run.EXAM_CATALOG.items():
+            self.assertLessEqual(len(phrase), run.MAX_CHARS, key)
+            self.assertNotIn('상하지', phrase, key)                            # arms and legs were refused as "not specific"
+        for key in ('arm_strength', 'leg_strength', 'eye_movement', 'ptosis', 'pupils', 'neck_stiffness', 'cva', 'ears', 'romberg'):
+            self.assertIn(key, run.EXAM_CATALOG)
+        self.assertNotIn('strength', run.EXAM_CATALOG)
+
+    def test_dont_know_and_not_confirmed_are_not_answers(self):
+        for no in ('무엇이 가장 걱정되는지는 잘 모르겠어요.', '가족력은 확인되지 않았어요.', '확인 안 됐어요', '그건 모르겠어요', '미확인입니다.'):
+            self.assertTrue(run.UNKNOWN_REPLY.search(no), no)
+            self.assertEqual(run.concern_words(['턴 1 의사: ' + run.CONCERN_QUESTION, '환자: ' + no]), '', no)
+        self.assertIsNone(run.UNKNOWN_REPLY.search('살이 계속 빠지는 이유가 큰 병일까 봐 걱정돼요.'))
+
+    def test_the_summary_facts_leave_out_the_answer_about_the_worry(self):
+        session = {'initial': {'opening': '배가 아파요', 'vital_signs': ''}}
+        transcript = ['턴 1 의사: ' + run.CONCERN_QUESTION, '환자: 큰 병일까 봐 걱정돼요.',
+                      '턴 2 의사: 언제부터인가요?', '환자: 석 달 전부터 시작됐어요.',
+                      '턴 3 의사: 다른 증상이 있나요?', '환자: 두근거림이 있어요.']
+        facts = run.patient_facts(session, transcript)
+        self.assertIn('석 달 전부터', facts)
+        self.assertNotIn('큰 병일까', facts)
+        self.assertEqual(run.patient_facts(session, transcript[:4]), '')        # only one usable answer left: too little

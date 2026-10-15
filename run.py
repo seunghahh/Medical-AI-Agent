@@ -319,13 +319,26 @@ BASIC_REVIEW = (
 )
 
 
-def history_queue(opening):
+def age_in_years(text):
+    """Age in years from an opening statement: Korean (서른두 살, 62세), months for infants (생후 8개월, 8개월 된 아기),
+    or English (35-year-old, 8-month-old). None when no age is stated. A bare "3개월 전부터" is a duration, not an age."""
     from grounding import korean_number
-    age_match=re.search(r'([가-힣]+|\d+)\s*살|(?<!\d)(\d+)\s*세(?!\s*시)',opening)
-    age=None
-    if age_match:
-        raw=age_match.group(1) or age_match.group(2)
-        age=int(raw) if raw.isdigit() else korean_number(raw)
+    months = re.search(r'생후\s*(\d+)\s*개월|(\d+)\s*개월\s*(?:된|남아|여아|아기|아이|영아)|(\d+)[\s-]*months?[\s-]*old', text, re.I)
+    if months:
+        return int(next(group for group in months.groups() if group)) / 12
+    english = re.search(r'(\d+)[\s-]*(?:years?[\s-]*old|y/?o\b)', text, re.I)
+    if english:
+        return float(english.group(1))
+    korean = re.search(r'([가-힣]+|\d+)\s*살|(?<!\d)(\d+)\s*세(?!\s*시)', text)
+    if korean:
+        raw = korean.group(1) or korean.group(2)
+        number = int(raw) if raw.isdigit() else korean_number(raw)
+        return None if number is None else float(number)
+    return None
+
+
+def history_queue(opening):
+    age=age_in_years(opening)
     child=age is not None and age<12
     medication=bool(re.search(r'처방|수면제|진통제|약을|약이|복용|medication|medicine|pills?',opening,re.I))
     queue=[('concern','걱정되셨겠어요. 가장 걱정되는 점은 무엇인가요?')]
@@ -343,7 +356,7 @@ def history_queue(opening):
         queue.extend((('birth','태어날 때 임신 주수와 몸무게는요?'),
                       ('development','말·걷기 등 발달은 또래와 비슷했나요?'),
                       ('daily_life','평소 식사와 수면은 어떤가요?')))
-    elif age is not None and 18<=age<=50 and re.search(r'여자|여성',opening):
+    elif age is not None and 18<=age<=50 and re.search(r'여자|여성|female|woman|women',opening,re.I):
         queue.extend((('menstrual','최근 생리 주기나 양이 달라졌나요?'),
                       ('pregnancy','임신 가능성이나 수유 중인 상태인가요?')))
     return queue
@@ -393,7 +406,18 @@ EXAM_CATALOG = {
     'tremor':'양손 자세성 떨림을 확인하겠습니다',
     'gait':'보행을 관찰하겠습니다',
     'coordination':'손가락코 검사를 하겠습니다',
-    'strength':'상하지 근력을 평가하겠습니다',
+    'arm_strength':'팔 근력을 평가하겠습니다',
+    'leg_strength':'다리 근력을 평가하겠습니다',
+    'eye_movement':'안구 운동을 확인하겠습니다',
+    'ptosis':'눈꺼풀 처짐을 확인하겠습니다',
+    'pupils':'동공 반응을 확인하겠습니다',
+    'visual_acuity':'시력을 확인하겠습니다',
+    'ears':'귀를 시진하겠습니다',
+    'mouth':'구강 내를 시진하겠습니다',
+    'neck_stiffness':'경부 강직을 확인하겠습니다',
+    'cva':'옆구리 두드림 통증을 확인하겠습니다',
+    'orthostatic':'기립성 혈압을 측정하겠습니다',
+    'romberg':'롬베르그 검사를 하겠습니다',
     'reflex':'슬개건 반사를 확인하겠습니다',
     'anthropometry':'신장과 체중을 측정하겠습니다',
     'proportion':'신체 비율을 관찰하겠습니다',
@@ -402,7 +426,7 @@ EXAM_CATALOG = {
     'pharynx':'인두를 시진하겠습니다',
     'joints':'관절 부종을 시진하겠습니다',
 }
-EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 3~5개 선택하세요. 환자의 호소와 관련된 계통(심장·폐·복부·신경 등)을 고르게 포함합니다. "
+EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 3~5개 선택하세요. 환자의 호소와 관련된 계통(심장·폐·복부·신경 등)을 고르게 포함하고, 호소 부위에 직접 맞는 진찰(예: 눈 증상이면 안구 운동, 옆구리 통증이면 옆구리 두드림 통증)을 먼저 고릅니다. "
     "제공된 catalog의 키만 선택합니다. 없는 동작/검사를 만들지 마세요. 이미 확인한 정보는 반복하지 않습니다. "
     'JSON 하나만: {"ids":["키1","키2"]}. 필요 없으면 빈 배열. catalog=' + json.dumps(EXAM_CATALOG,ensure_ascii=False))
 
@@ -604,7 +628,7 @@ SIMILAR = 0.40      # lines overlapping at least this much count as the same thi
 MAX_ANSWERS = 2      # replies to what the patient says during the closing
 SAFE_REPLIES = {'concern': '걱정되셨겠어요. 함께 확인해 가요.', 'answer': '검사로 정확히 확인하고 함께 정해요.'}
 WORRIED = re.compile(r'\?|걱정(?:돼|되|이|스)|무서|두려|불안|있을까요|될까요|할까요|괜찮을까요|어떡')
-UNKNOWN_REPLY = re.compile(r'미확인|UNKNOWN|자료.{0,8}없')
+UNKNOWN_REPLY = re.compile(r'미확인|UNKNOWN|자료.{0,8}없|확인되지\s*않|확인\s*안|잘\s*모르|모르겠|알 수 없|기억(?:이)?\s*(?:안|나지)')
 REPLY_PROMPT = ("You write one short Korean reply from a doctor to a patient during a first visit. "
     'Return exactly one JSON object: {"text":"한국어 한 문장"}. '
     'The sentence is complete, ends in 요 or 죠, and is at most 30 characters including spaces. '
@@ -615,7 +639,7 @@ REPLY_TASKS = {
     'concern': "The patient was asked for their main worry. Acknowledge that worry in their own words and, only if the plan "
                'supports it, say the cause will be checked and the next steps decided together.',
     'summary': "Reflect back, in the patient's own words, their main symptoms and how long they have had them. Do not mention "
-               'the plan, tests, treatment or any reassurance. Example style: 석 달 동안 살이 빠지셨군요.',
+               'the plan, tests, treatment, reassurance, worry or feelings. Example style: 석 달 동안 살이 빠지셨군요.',
     'answer': 'Answer what the patient just asked or worried about, using only the plan. If they asked when, give the '
               'follow-up time from the plan. If they asked how to manage or reduce something, give the safe direction the plan '
               'states (for example changing it gradually with the doctor). If the plan does not cover it, say it will be '
@@ -651,9 +675,16 @@ def empathy_prefix(transcript, content, used):
 
 
 def patient_facts(session, transcript):
-    """The opening plus up to six usable answers, for a one-line summary; '' when the patient told us too little."""
-    answers = [line[len('환자: '):].strip() for line in transcript
-               if line.startswith('환자: ') and not UNKNOWN_REPLY.search(line) and len(line) > 8]
+    """The opening plus up to six usable answers (not the answer about their worry), for a one-line summary; '' when
+    the patient told us too little."""
+    answers, skip = [], False
+    for line in transcript:
+        if line.endswith('의사: ' + CONCERN_QUESTION):
+            skip = True
+        elif line.startswith('환자: '):
+            if not skip and not UNKNOWN_REPLY.search(line) and len(line) > 8:
+                answers.append(line[len('환자: '):].strip())
+            skip = False
     if len(answers) < 2:
         return ''
     return (session['initial']['opening'] + ' ' + ' '.join(answers[:6]))[:700]
@@ -810,11 +841,9 @@ def consult(client, model):
     if remaining and seconds_left(session) > 60:
         try:
             queue = list(patient_explanations(client, note, diagnosis))
-            wanted = []                            # lead lines, only as many as fit after every planned line
-            if patient_facts(session, transcript):
-                wanted.append(('summary', patient_facts(session, transcript)))
-            if concern_words(transcript):
-                wanted.append(('concern', concern_words(transcript)))
+            # One lead line, as many as fit after every planned line: the worry if we know it, else a summary.
+            worry, facts = concern_words(transcript), patient_facts(session, transcript)
+            wanted = [('concern', worry)] if worry else [('summary', facts)] if facts else []
             room = remaining - len(queue)
             lead = []
             for kind, words in (wanted[-room:] if room > 0 else []):
