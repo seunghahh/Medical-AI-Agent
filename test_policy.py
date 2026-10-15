@@ -44,12 +44,13 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(len(c.calls),2)
 
     def test_treatment_and_followup_cannot_be_reinvented(self):
-        c=Scripted([{'text':''}])
+        c=Scripted([{'text':'약을 바로 시작해요.'},{'text':'약을 바로 시작해요.'},{'text':''}])
         note={'P':{'tests':'','education':'','treatment':'Review first','follow_up':'Reassess in 2 weeks.'}}
         output=run.patient_explanations(c,note,'')
-        self.assertEqual(output,[('treatment','검사 확인 후 치료 방향을 함께 정해요.'),('follow_up','2주 뒤 결과와 경과를 확인해요.')])
-        self.assertEqual(len(c.calls),1)  # Only the warning source is model-generated.
-        self.assertIn('위험 증상',c.calls[0][0][0]['content'])
+        # An unconditional treatment line is refused twice, so the safe fixed line is used; follow-up is rendered by code.
+        self.assertEqual(output,[('treatment',run.TREATMENT_FALLBACK),('follow_up','2주 뒤 결과와 경과를 확인해요.')])
+        self.assertEqual(len(c.calls),3)
+        self.assertIn('위험 증상',c.calls[2][0][0]['content'])
         self.assertEqual(run.followup_sentence('Return in 6–12 months.'),'6~12개월 뒤 결과와 경과를 확인해요.')
         self.assertIsNone(run.followup_sentence('Return when needed.'))
 

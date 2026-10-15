@@ -173,7 +173,7 @@ class ClosingReplyTests(unittest.TestCase):
 
     def test_exams_stop_early_enough_to_keep_the_closing_lines(self):
         ids = ['heart', 'lungs', 'abdomen', 'thyroid', 'eyes']
-        sim, spoken = run_closing(lambda q: UNKNOWN, max_turns=9, exam_ids=ids)    # six of nine turns belong to the closing
+        sim, spoken = run_closing(lambda q: UNKNOWN, max_turns=12, exam_ids=ids)   # nine of twelve turns belong to the closing
         self.assertEqual(len(sim.exams), 3)
         self.assertEqual(len(spoken), 6)
         self.assertEqual(spoken[-1], run.INVITATION)
@@ -294,13 +294,14 @@ class ClosingContentTests(unittest.TestCase):
     def test_the_explanation_gets_a_self_care_line_and_may_name_a_drug_the_patient_mentioned(self):
         client, sim = self.client(*[{'text': t} for t in (
             '스틸녹스를 오래 먹어 몸이 약에 익숙해졌을 수 있어요.', '피검사로 원인을 확인해요.',
-            '갑자기 끊지 말고 천천히 줄여요.', '심해지면 바로 진료받아요.')])
+            '확인 후 약을 천천히 줄이는 계획을 세워요.', '갑자기 끊지 말고 천천히 줄여요.', '심해지면 바로 진료받아요.')])
         output = run.patient_explanations(client, self.note(), 'Zolpidem use disorder')
         self.assertEqual([topic for topic, _ in output], ['cause', 'next', 'treatment', 'follow_up', 'self_care', 'warning'])
         first = sim.doctor.messages[0]
         self.assertIn('may be used exactly as they said it', first[0]['content'])
         self.assertIn('스틸녹스를 먹어요', first[1]['content'])               # the cause call sees the patient's medication answer
         self.assertIn('금단', first[0]['content'])                              # and is told to use everyday words
+        self.assertEqual(output[2], ('treatment', '확인 후 약을 천천히 줄이는 계획을 세워요.'))  # explained, not a fixed line
 
 
 class GeneralTests(unittest.TestCase):

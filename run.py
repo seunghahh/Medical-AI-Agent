@@ -221,7 +221,7 @@ def write_record(client, session, transcript, preliminary=True, references='', s
             diagnosis=candidate.get('diagnosis')
             if isinstance(diagnosis,str) and diagnosis.strip():
                 plans=parse_plan(brief_call(client,PLAN_PROMPT,
-                    json.dumps({'unchanged_diagnosis':diagnosis,'observations':items},ensure_ascii=False),4096,'medium')) or {}
+                    json.dumps({'unchanged_diagnosis':diagnosis,'observations':items},ensure_ascii=False),6000,'medium')) or {}
                 candidate['P']=plans.get('P',{})
         except NovaError:
             pass
@@ -524,10 +524,13 @@ PLAN_PROMPT = """Write a concise prospective clinical plan for the supplied unch
 Use ENGLISH for clinical precision. Do not rewrite patient history, invent findings, or claim any proposed test/treatment has occurred.
 First-line screening tests need a purpose; provocative/invasive tests need a stated indication. Do not treat a benign variation as a drug indication.
 Treatment must match the working diagnosis. Consider relevant confirmation, contraindications, pregnancy or baseline safety tests BEFORE medicines. Never give individual drug doses or taper percentages. Do not recommend abrupt withdrawal or adding sedatives before reviewing current exposure. Conservative monitoring is a valid plan.
-Give a concrete follow-up interval and what to reassess. Education: explain the likely cause, acknowledge uncertainty, and give relevant warning SYMPTOMS and the urgent action. Do not claim understanding.
+Tests: one line per test as "- test : purpose", covering (a) confirmation of the working diagnosis, (b) exclusion of the important differentials, (c) baseline or safety tests needed before the likely treatment, and (d) bedside tests such as ECG or imaging when the findings call for them. Do not list tests with no clear purpose for this patient.
+Disposition: state outpatient care, same-day referral or emergency care, and the observed reason (e.g. stable vital signs and no danger signs observed, or which danger sign); add specialist referral when indicated.
+Follow-up: (a) when to return to review the test results, (b) the longer-term monitoring interval and what to reassess, (c) the findings that would trigger referral, and (d) the warning SYMPTOMS that mean returning immediately before the planned visit.
+Education: explain the likely cause in plain words, answer the patient's stated worry if they voiced one, why the tests are needed, the treatment direction, practical self-care, and the warning SYMPTOMS with the urgent action. Do not claim understanding.
 Do not include numerical growth thresholds or individual doses/rates in treatment or disposition. Do not describe patient attributes in education; explain the condition and proposed actions. Every medicine is conditional on confirmation and relevant safety checks, not an instruction to start now.
-Return one complete JSON object, UNDER 350 WORDS:
-{"P":{"tests":"screening tests and purpose","treatment":"conditional treatment or monitoring direction","disposition":"referral if indicated","follow_up":"time and review items","education":"cause, precautions, warning symptoms and urgent action"}}
+Return one complete JSON object, UNDER 450 WORDS:
+{"P":{"tests":"- test : purpose (one per line)","treatment":"conditional treatment or monitoring direction","disposition":"level of care with reason; referral if indicated","follow_up":"result review time, monitoring interval, referral triggers, return-immediately symptoms","education":"cause, worry, tests, treatment direction, self-care, warning symptoms and urgent action"}}
 """
 
 
@@ -620,12 +623,16 @@ def followup_sentence(source):
     return result if len(result) <= MAX_CHARS else None
 
 
+TREATMENT_FALLBACK = '검사 확인 후 치료 방향을 함께 정해요.'
+
+
 def patient_explanations(client, note, diagnosis):
     # Isolate the source for each topic so a differential/treatment cannot replace the main diagnosis.
     fields = (
         ('cause', diagnosis, '가장 유력한 진단을 쉬운 말로 풀이하고 가능성으로 말하세요. 다른 원인을 추가하지 마세요.'),
         ('next', note['P']['tests'], '가장 필요한 검사 하나와 그 목적을 설명하세요.'),
-        ('treatment', note['P']['treatment'], '현재 가장 유력한 진단의 치료 방향 하나를 설명하세요. 감별에 대한 가정적 치료를 우선하지 말고 확인 조건을 유지하세요.'),
+        ('treatment', note['P']['treatment'], '현재 가장 유력한 진단의 치료 방향 하나를 쉬운 말로 설명하세요(형식 예시: 확인되면 약으로 호르몬을 조절해요). '
+         '약 이름·용량은 쓰지 말고 검사 확인 후라는 조건을 유지하세요. 감별에 대한 가정적 치료를 우선하지 마세요. 약이 필요 없다는 계획이면 그렇게 말하세요.'),
         ('follow_up', note['P']['follow_up'], '재진 시점과 확인할 것을 설명하세요. 시점을 바꾸지 마세요.'),
         ('self_care', note['P']['education'],
          '원문에 명시된 일상 관리나 약 복용 시 주의 하나를 설명하세요. 응급 행동이 필요한 경고 증상은 제외합니다. 없으면 빈 문자열.'),
@@ -635,9 +642,6 @@ def patient_explanations(client, note, diagnosis):
     output=[]
     for topic,source,task in fields:
         if not source.strip():
-            continue
-        if topic=='treatment':
-            output.append((topic,'검사 확인 후 치료 방향을 함께 정해요.'))
             continue
         if topic=='follow_up':
             rendered=followup_sentence(source)
@@ -657,18 +661,21 @@ def patient_explanations(client, note, diagnosis):
             conditional=topic!='treatment' or bool(re.search(r'확인|후|검사|상담|고려|관찰|추적',text))
             timing=topic!='follow_up' or not re.search(r'\d',source) or (bool(re.search(r'\d',text)) and set(re.findall(r'\d+',text))<=set(re.findall(r'\d+',source)))
             warning=topic!='warning' or bool(re.search(r'즉시|바로|응급|진료|병원|내원',text))
-            if 0<len(text)<=MAX_CHARS and complete and conditional and timing and warning and not re.search(r'\?|나요|습니까|할까요',text) and not re.search(r'\d\s*(?:mg|밀리그램|%)',text,re.I):
+            fresh=not any(similar(text,old) for _,old in output)
+            if 0<len(text)<=MAX_CHARS and complete and conditional and timing and warning and fresh and not re.search(r'\?|나요|습니까|할까요',text) and not re.search(r'\d\s*(?:mg|밀리그램|%)',text,re.I):
                 output.append((topic,text));break
             if not text:
                 break
             request += '\n직전 문장: '+text+'\n30자 이하 완전한 문장 하나로 의미·치료 조건을 보존해 수정하세요.'
+        if topic=='treatment' and not any(kind=='treatment' for kind,_ in output):
+            output.append((topic,TREATMENT_FALLBACK))   # a safe line when no conditional explanation came out
     return output
 
 
 MAX_EXAMS = 8         # physical exams after the history
 MAX_REVIEW = 8        # planned questions on the complaint and pertinent positives/negatives
 MAX_ADAPTIVE = 3      # one-at-a-time follow-up questions after everything planned
-CLOSING_LINES = 6     # turns kept for the planned explanation lines
+CLOSING_LINES = 9     # turns kept for the closing: worry line, six explanation lines, invitation, one reply
 HISTORY_STOP = MAX_EXAMS + CLOSING_LINES   # stop asking history when this many turns are left
 MAX_EMPATHY = 3       # short acknowledgments in front of questions, per visit
 EMPATHY = (
