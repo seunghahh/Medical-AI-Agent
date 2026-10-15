@@ -42,7 +42,7 @@ class ReplyEndpoint(PhaseEndpoint):
         if system.startswith('You write one short Korean reply'):
             self.messages.append(messages)
             self.reply_calls += 1
-            text = self.summary_text if 'Summarize' in messages[1]['content'] else self.text
+            text = self.summary_text if 'Reflect back' in messages[1]['content'] else self.text
             return json.dumps({'text': text}, ensure_ascii=False), 'stop', 10, 10
         if 'catalog=' in system:
             self.messages.append(messages)
@@ -163,11 +163,12 @@ class ClosingReplyTests(unittest.TestCase):
         self.assertEqual(sim.exams, [run.EXAM_CATALOG[k] for k in ids[:run.MAX_EXAMS]])
         self.assertTrue(any('진료' in m for m in spoken))                            # the warning line is still sent
 
-    def test_exams_stop_early_enough_to_keep_the_five_closing_lines(self):
+    def test_exams_stop_early_enough_to_keep_the_closing_lines(self):
         ids = ['heart', 'lungs', 'abdomen', 'thyroid', 'eyes']
-        sim, spoken = run_closing(lambda q: UNKNOWN, max_turns=9, exam_ids=ids)    # five of nine turns belong to the closing
-        self.assertEqual(len(sim.exams), 4)
-        self.assertEqual(len(spoken), 5)
+        sim, spoken = run_closing(lambda q: UNKNOWN, max_turns=9, exam_ids=ids)    # six of nine turns belong to the closing
+        self.assertEqual(len(sim.exams), 3)
+        self.assertEqual(len(spoken), 6)
+        self.assertEqual(spoken[-1], run.INVITATION)
         self.assertTrue(any('진료' in m for m in spoken))
 
     def test_what_counts_as_a_question_or_worry(self):
@@ -225,3 +226,70 @@ class FlowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ClosingContentTests(unittest.TestCase):
+    """The general-purpose closing fixes: follow-up times, answers from the plan, no repeated lines, a self-care line."""
+
+    def note(self, **plan):
+        base = {'tests': 'TSH test', 'treatment': 'Review first', 'follow_up': 'Review within 1–2 weeks.',
+                'education': 'Do not stop the medicine abruptly.'}
+        base.update(plan)
+        return {'P': base, 'S': {'hpi': '', 'fh': '', 'pmh': '스틸녹스를 먹어요'}}
+
+    def client(self, *replies):
+        sim = simulator(); sim.doctor = Endpoint(list(replies))
+        return LocalClient(sim), sim
+
+    def test_follow_up_times_in_hours_and_in_words(self):
+        plan = 'Reassess within 24 hours, then within one week.'
+        self.assertEqual(run.follow_up_time(plan), ('24', '시간'))
+        self.assertEqual(run.followup_sentence(plan), '24시간 안에 상태를 다시 확인해요.')
+        self.assertEqual(run.follow_up_time('See you again in a week.'), ('1', '주'))
+        self.assertEqual(run.followup_sentence('Return in two weeks.'), '2주 뒤 결과와 경과를 확인해요.')
+        self.assertEqual(run.followup_sentence('Return in 6–12 months.'), '6~12개월 뒤 결과와 경과를 확인해요.')
+        self.assertIsNone(run.follow_up_time('Return when needed.'))
+
+    def test_a_when_question_gets_the_time_the_plan_states_without_a_model_call(self):
+        client, sim = self.client({'text': '결과가 나오면 함께 살펴봐요.'})      # used only for the repeated question below
+        text = run.reply_message(client, 'answer', '검사 결과는 언제쯤 알 수 있을까요?', self.note(), 'dx', set())
+        self.assertEqual(text, '결과는 1~2주 안에 함께 봐요.')
+        self.assertEqual(sim.doctor.messages, [])                     # answered from the plan: no model call
+        again = run.reply_message(client, 'answer', '결과는 언제 나오나요?', self.note(), 'dx', {text})
+        self.assertEqual(again, '결과가 나오면 함께 살펴봐요.')           # the time was already said: a different sentence
+
+    def test_numbers_are_allowed_only_when_the_plan_or_the_patient_used_them(self):
+        client, sim = self.client({'text': '3주 뒤에 함께 정해요.'}, {'text': '2주 안에 함께 정해요.'})
+        self.assertEqual(run.reply_message(client, 'answer', '어떻게 하나요?', self.note(), 'dx', set()), '2주 안에 함께 정해요.')
+        client, sim = self.client({'text': '3주 뒤에 함께 정해요.'}, {'text': '3개월 걸려요.'})
+        self.assertEqual(run.reply_message(client, 'answer', '어떻게 하나요?', self.note(), 'dx', set()),
+                         run.SAFE_REPLIES['answer'])         # neither attempt used a number from the plan
+
+    def test_the_summary_request_has_no_plan_tail_and_the_answer_request_sees_the_education_text(self):
+        client, sim = self.client({'text': '석 달 동안 살이 빠지셨군요.'}, {'text': '갑자기 끊지 말고 천천히 줄여요.'})
+        run.reply_message(client, 'summary', '석 달 전부터 살이 빠졌어요', self.note(), 'dx', set())
+        run.reply_message(client, 'answer', '약을 줄일 방법이 있을까요?', self.note(), 'dx', set())
+        summary_request, answer_request = (m[1]['content'] for m in sim.doctor.messages)
+        self.assertIn('Do not mention the plan', summary_request)
+        self.assertNotIn('decided together', summary_request)
+        self.assertIn('Do not stop the medicine abruptly', answer_request)
+        self.assertIn('gradually', answer_request)
+
+    def test_a_line_that_repeats_an_earlier_one_is_not_sent_again(self):
+        said = {'큰 병일까 걱정되셨죠, 원인 확인 후 함께 정해요.'}
+        client, sim = self.client({'text': '석 달간 살 빠져 걱정되셨죠, 원인 확인해 함께 정해요.'}, {'text': '석 달 동안 살이 빠지셨군요.'})
+        self.assertEqual(run.reply_message(client, 'summary', '살이 빠졌어요', self.note(), 'dx', said), '석 달 동안 살이 빠지셨군요.')
+        self.assertTrue(run.similar('큰 병일까 걱정되셨죠, 원인 확인 후 함께 정해요.', '석 달간 살 빠져 걱정되셨죠, 원인 확인해 함께 정해요.'))
+        self.assertFalse(run.similar('검사로 원인을 확인해요.', '검사 확인 후 치료 방향을 함께 정해요.'))
+        self.assertFalse(run.similar('금단·중독 상태를 평가해 안전한 치료 수준을 정해요.', '검사로 정확히 확인하고 함께 정해요.'))
+
+    def test_the_explanation_gets_a_self_care_line_and_may_name_a_drug_the_patient_mentioned(self):
+        client, sim = self.client(*[{'text': t} for t in (
+            '스틸녹스를 오래 먹어 몸이 약에 익숙해졌을 수 있어요.', '피검사로 원인을 확인해요.',
+            '갑자기 끊지 말고 천천히 줄여요.', '심해지면 바로 진료받아요.')])
+        output = run.patient_explanations(client, self.note(), 'Zolpidem use disorder')
+        self.assertEqual([topic for topic, _ in output], ['cause', 'next', 'treatment', 'follow_up', 'self_care', 'warning'])
+        first = sim.doctor.messages[0]
+        self.assertIn('may be used exactly as they said it', first[0]['content'])
+        self.assertIn('스틸녹스를 먹어요', first[1]['content'])               # the cause call sees the patient's medication answer
+        self.assertIn('금단', first[0]['content'])                              # and is told to use everyday words

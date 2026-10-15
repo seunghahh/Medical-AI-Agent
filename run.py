@@ -519,16 +519,28 @@ def choose_question(client, session, transcript, used):
     return None
 
 
+def follow_up_time(source):
+    """(number, unit) of the first interval written in P.follow_up, or None. Never chooses a new interval."""
+    words = {'one': '1', 'two': '2', 'three': '3', 'four': '4'}
+    source = re.sub(r'\b(?:a|an)\s+(?=(?:hour|day|week|month|year)\b)', '1 ', source, flags=re.I)
+    source = re.sub(r'\b(one|two|three|four)\b', lambda m: words[m.group(1).lower()], source, flags=re.I)
+    match = re.search(r'(\d+(?:\s*[–−~-]\s*\d+)?)\s*(hours?|weeks?|months?|days?|years?|시간|주|개월|일|년)', source, re.I)
+    if not match:
+        return None
+    number = re.sub(r'\s+', '', match.group(1)).translate(str.maketrans({'–': '~', '−': '~', '-': '~'}))
+    unit = match.group(2).lower()
+    unit = ('시간' if unit.startswith('hour') else '주' if unit.startswith('week') else '개월' if unit.startswith('month')
+            else '일' if unit.startswith('day') else '년' if unit.startswith('year') else unit)
+    return number, unit
+
+
 def followup_sentence(source):
-    # Only render a time explicitly present in P.follow_up; never choose a new interval.
-    pattern=r'(\d+(?:\s*[–−~-]\s*\d+)?)\s*(weeks?|months?|days?|years?|주|개월|일|년)'
-    match=re.search(pattern,source,re.I)
-    if not match:return None
-    number=re.sub(r'\s+','',match.group(1)).translate(str.maketrans({'–':'~','−':'~','-':'~'}))
-    unit=match.group(2).lower()
-    unit=('주' if unit.startswith('week') else '개월' if unit.startswith('month') else '일' if unit.startswith('day') else '년' if unit.startswith('year') else unit)
-    result=number+unit+' 뒤 결과와 경과를 확인해요.'
-    return result if len(result)<=MAX_CHARS else None
+    found = follow_up_time(source)
+    if not found:
+        return None
+    number, unit = found
+    result = number + unit + (' 안에 상태를 다시 확인해요.' if unit == '시간' else ' 뒤 결과와 경과를 확인해요.')
+    return result if len(result) <= MAX_CHARS else None
 
 
 def patient_explanations(client, note, diagnosis):
@@ -538,6 +550,8 @@ def patient_explanations(client, note, diagnosis):
         ('next', note['P']['tests'], '가장 필요한 검사 하나와 그 목적을 설명하세요.'),
         ('treatment', note['P']['treatment'], '현재 가장 유력한 진단의 치료 방향 하나를 설명하세요. 감별에 대한 가정적 치료를 우선하지 말고 확인 조건을 유지하세요.'),
         ('follow_up', note['P']['follow_up'], '재진 시점과 확인할 것을 설명하세요. 시점을 바꾸지 마세요.'),
+        ('self_care', note['P']['education'],
+         '원문에 명시된 일상 관리나 약 복용 시 주의 하나를 설명하세요. 응급 행동이 필요한 경고 증상은 제외합니다. 없으면 빈 문자열.'),
         ('warning', note['P']['education']+' '+note['P']['follow_up'],
          '원문에 명시된 위험 증상 하나와 즉시 진료 행동을 설명하세요. 위험 증상이 없으면 빈 문자열.'),
     )
@@ -556,9 +570,9 @@ def patient_explanations(client, note, diagnosis):
         prompt = ("You translate a single clinical message for a Korean-speaking patient. Do not invent patient facts or change the meaning. "
             'Return exactly one JSON object: {"text":"한국어 한 문장"}. No lists. '
             'The Korean sentence must be complete, end in 해요/필요해요/있어요/봐요 or equivalent, and be at most 30 characters including spaces. '
-            'Use plain Korean about the mechanism and practical action; avoid new proper names, drug names, English abbreviations and technical jargon. No question or new drug dose. If the source is insufficient, return {"text":""}.\n' +task)
+            'Use plain Korean about the mechanism and practical action; avoid new proper names, English abbreviations and technical jargon. A drug or product name that the patient said in observed_context may be used exactly as they said it. Replace Sino-Korean medical words such as 금단, 중독, 내성 with everyday words. No question or new drug dose. If the source is insufficient, return {"text":""}.\n' +task)
         request = json.dumps({'source':source,'unchanged_diagnosis':diagnosis,
-            'observed_context':(note.get('S',{}).get('hpi','')+' '+note.get('S',{}).get('fh','')) if topic=='cause' else ''},ensure_ascii=False)
+            'observed_context':(note.get('S',{}).get('hpi','')+' '+note.get('S',{}).get('fh','')+' '+note.get('S',{}).get('pmh','')) if topic=='cause' else ''},ensure_ascii=False)
         for attempt in range(2):
             value=parse_json(brief_call(client,prompt,request,4096,'medium')) or {}
             text=unicodedata.normalize('NFC',str(value.get('text') or '')).strip()
@@ -575,7 +589,7 @@ def patient_explanations(client, note, diagnosis):
 
 
 MAX_EXAMS = 5         # physical exams after the history
-CLOSING_LINES = 5     # turns kept for the planned explanation lines
+CLOSING_LINES = 6     # turns kept for the planned explanation lines
 HISTORY_STOP = MAX_EXAMS + CLOSING_LINES   # stop asking history when this many turns are left
 MAX_EMPATHY = 3       # short acknowledgments in front of questions, per visit
 EMPATHY = (
@@ -586,6 +600,7 @@ EMPATHY = (
 NEGATED = re.compile(r'않|없|아니|괜찮')
 INVITATION = '궁금한 점은 편하게 얘기해 주셔도 돼요.'
 CONCERN_QUESTION = '걱정되셨겠어요. 가장 걱정되는 점은 무엇인가요?'
+SIMILAR = 0.40      # lines overlapping at least this much count as the same thing
 MAX_ANSWERS = 2      # replies to what the patient says during the closing
 SAFE_REPLIES = {'concern': '걱정되셨겠어요. 함께 확인해 가요.', 'answer': '검사로 정확히 확인하고 함께 정해요.'}
 WORRIED = re.compile(r'\?|걱정(?:돼|되|이|스)|무서|두려|불안|있을까요|될까요|할까요|괜찮을까요|어떡')
@@ -593,10 +608,27 @@ UNKNOWN_REPLY = re.compile(r'미확인|UNKNOWN|자료.{0,8}없')
 REPLY_PROMPT = ("You write one short Korean reply from a doctor to a patient during a first visit. "
     'Return exactly one JSON object: {"text":"한국어 한 문장"}. '
     'The sentence is complete, ends in 요 or 죠, and is at most 30 characters including spaces. '
-    'No question, no numbers, no drug names or doses, no new diagnosis, and no promise of a result or cure. '
-    "Start from the patient's own words (for example that they were worried about something), then say only what the plan supports: "
-    'the cause will be checked and the next steps decided together. Never contradict the plan or the working diagnosis. '
+    'No question, no drug names or doses, no new diagnosis, no promise of a result or cure, and no numbers except times '
+    'that already appear in the plan. Plain everyday Korean; never contradict the plan or the working diagnosis. '
     'If you cannot reply safely, return {"text":""}.')
+REPLY_TASKS = {
+    'concern': "The patient was asked for their main worry. Acknowledge that worry in their own words and, only if the plan "
+               'supports it, say the cause will be checked and the next steps decided together.',
+    'summary': "Reflect back, in the patient's own words, their main symptoms and how long they have had them. Do not mention "
+               'the plan, tests, treatment or any reassurance. Example style: 석 달 동안 살이 빠지셨군요.',
+    'answer': 'Answer what the patient just asked or worried about, using only the plan. If they asked when, give the '
+              'follow-up time from the plan. If they asked how to manage or reduce something, give the safe direction the plan '
+              'states (for example changing it gradually with the doctor). If the plan does not cover it, say it will be '
+              'decided together with the doctor.'}
+
+
+def similar(first, second):
+    """True when two lines say nearly the same thing (overlap of character pairs)."""
+    def pairs(text):
+        letters = re.sub(r'[^가-힣a-zA-Z0-9]', '', text)
+        return {letters[number:number + 2] for number in range(len(letters) - 1)}
+    left, right = pairs(first), pairs(second)
+    return bool(left and right) and len(left & right) / len(left | right) >= SIMILAR
 
 
 def empathy_prefix(transcript, content, used):
@@ -644,14 +676,17 @@ def needs_answer(text):
 
 def reply_message(client, kind, words, note, diagnosis, sent):
     """One sentence answering what the patient just said, from the plan only. Falls back to a fixed, fact-free line,
-    and to None when that line was already said."""
-    task = {'concern': 'The patient was asked for their main worry; acknowledge it in their own terms.',
-            'summary': 'Summarize in one sentence what the patient told you (their main symptoms and how long), '
-                       "in the patient's own terms, so they feel heard. Example style: 석 달 동안 살이 빠지셨군요.",
-            'answer': 'The patient just asked something or voiced a worry; answer it directly if the plan allows, '
-                      'otherwise say it will be confirmed by the tests and the doctor.'}[kind]
-    request = json.dumps({'task': task, 'patient_words': words, 'working_diagnosis': diagnosis,
-                          'plan': {key: note['P'][key] for key in ('tests', 'treatment', 'follow_up')}}, ensure_ascii=False)
+    and to None when that line (or one like it) was already said."""
+    plan = {key: note['P'][key][:400] for key in ('tests', 'treatment', 'follow_up', 'education')}
+    if kind == 'answer' and re.search(r'언제|며칠|얼마나 걸|결과', words):
+        found = follow_up_time(plan['follow_up'])           # a "when" question gets the time the plan states
+        if found:
+            line = f'결과는 {found[0]}{found[1]} 안에 함께 봐요.'
+            if len(line) <= MAX_CHARS and not any(similar(line, old) for old in sent):
+                return line
+    allowed = set(re.findall(r'\d+', ' '.join(plan.values()) + ' ' + words))   # numbers the plan or the patient already used
+    request = json.dumps({'task': REPLY_TASKS[kind], 'patient_words': words, 'working_diagnosis': diagnosis,
+                          'plan': plan}, ensure_ascii=False)
     for attempt in range(2):
         try:
             value = parse_json(brief_call(client, REPLY_PROMPT, request, 2048, 'medium')) or {}
@@ -662,13 +697,14 @@ def reply_message(client, kind, words, note, diagnosis, sent):
             break
         if (len(text) <= MAX_CHARS and re.search(r'(?:요|죠|니다)[.!。]?$', text)
                 and not re.search(r'\?|나요|습니까|할까요|세요|말씀해|알려', text)
-                and not re.search(r'\d|mg|밀리그램', text, re.I)
-                and not re.search(r'완치|반드시|틀림없|걱정\s*마|괜찮을\s*거', text) and text not in sent):
+                and set(re.findall(r'\d+', text)) <= allowed and not re.search(r'mg|밀리그램', text, re.I)
+                and not re.search(r'완치|반드시|틀림없|걱정\s*마|괜찮을\s*거', text)
+                and not any(similar(text, old) for old in sent)):
             return text
         request = request[:-1] + ', "previous_attempt": ' + json.dumps(text, ensure_ascii=False) + \
-            ', "fix": "one complete sentence of at most 30 characters, plain, no promise"}'
+            ', "fix": "one complete sentence of at most 30 characters, plain, no promise, different from what was said before"}'
     fallback = SAFE_REPLIES.get(kind)      # a summary has no neutral fallback: better silent than wrong
-    return fallback if fallback and fallback not in sent else None
+    return fallback if fallback and not any(similar(fallback, old) for old in sent) else None
 
 
 DOSE_PATTERN = re.compile(r'\d[\d.\s–~−-]*\s*(?:mg|mcg|μg|µg|밀리그램|마이크로그램|%)',re.I)
@@ -782,7 +818,7 @@ def consult(client, model):
             room = remaining - len(queue)
             lead = []
             for kind, words in (wanted[-room:] if room > 0 else []):
-                message = reply_message(client, kind, words, note, diagnosis, set())
+                message = reply_message(client, kind, words, note, diagnosis, {line for _, line in lead})
                 if message:
                     lead.append((kind, message))
             queue[0:0] = lead
@@ -790,7 +826,7 @@ def consult(client, model):
             sent, answers = set(), 0
             while queue:
                 topic, content = queue.pop(0)
-                if not content or content in sent:
+                if not content or any(similar(content, old) for old in sent):
                     continue
                 if remaining <= 0 or seconds_left(session) <= 30:
                     break
