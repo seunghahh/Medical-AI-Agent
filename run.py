@@ -311,12 +311,16 @@ HISTORY_TOPICS = ('concern', 'onset', 'course', 'associated_1', 'associated_2',
                   'prior_care', 'treatment_safety')
 BASIC_REVIEW = (
     ('past','이전에 앓은 병이나 수술받은 적이 있나요?'),
+    ('chronic','고혈압·당뇨·간염·결핵 병력이 있나요?'),
     ('medications','현재 쓰는 약이나 보충제가 있나요?'),
     ('allergy','약이나 음식에 알레르기가 있나요?'),
     ('family','가족 중 비슷한 증상이 있는 분이 있나요?'),
+    ('family_chronic','가족 중 고혈압·당뇨·뇌졸중이 있나요?'),
     ('smoking','담배를 피우시나요?'),
     ('alcohol','술은 얼마나 자주 마시나요?'),
+    ('occupation','직업은 무엇인가요?'),
 )
+ADULT_ONLY = {'chronic', 'family_chronic', 'alcohol', 'occupation'}
 
 
 def age_in_years(text):
@@ -345,7 +349,7 @@ def history_queue(opening):
     if medication:
         queue.extend(MEDICATION_REVIEW)
     for key,question in BASIC_REVIEW:
-        if child and key=='alcohol':
+        if child and key in ADULT_ONLY:
             continue
         if child and key=='smoking':
             question='가정에서 담배 연기 노출이 있나요?'
@@ -393,6 +397,15 @@ Return exactly {"topic":"one unused allowed_topics key","action":"SAY","content"
 If no relevant missing question remains, return {"action":"DONE"}. A topic key does not justify repeating known information.
 """
 
+REVIEW_PROMPT = """You plan the next interview questions of a first outpatient visit, like a careful attending physician.
+Read the opening statement and every answer so far, then list the questions still worth asking, most important first:
+1. The chief complaint, where the opening has not already said it: onset, course, character and severity, timing, what makes it better or worse, and any care already received for it.
+2. Pertinent positives AND negatives for the likely causes and the dangerous causes of this presentation: general symptoms (appetite, weight, sleep, fatigue, fever), mood and stress, and the organ systems this complaint involves.
+3. Facts the diagnosis or plan depends on that are not symptoms, only when relevant: e.g. the parents' heights for a child's growth, caffeine or other substances, work exposures, travel, sexual history, sleep habits.
+4. How the problem affects daily life, if not yet known.
+Rules: Korean, at most 30 characters including spaces, about the patient's own experience; one symptom (or two closely related ones) per question so a yes/no answer is unambiguous. Never ask again about anything already stated or asked. For a child, ask the guardian about the child and never ask adult smoking/drinking questions. Never ask the patient to explain medical knowledge, diagnoses or which tests to do. UNKNOWN means unavailable, not normal.
+Return exactly {"questions":["질문1","질문2"]} with at most 10 questions; an empty list when nothing relevant remains."""
+
 EXAM_CATALOG = {
     'orientation':'지남력을 평가하겠습니다',
     'skin':'피부를 시진하겠습니다',
@@ -425,8 +438,33 @@ EXAM_CATALOG = {
     'lymph':'경부 림프절을 촉진하겠습니다',
     'pharynx':'인두를 시진하겠습니다',
     'joints':'관절 부종을 시진하겠습니다',
+    'pulse':'요골동맥 맥박을 촉진하겠습니다',
+    'palms':'손바닥 습윤을 확인하겠습니다',
+    'thyroid_bruit':'갑상선 잡음을 청진하겠습니다',
+    'bowel_sounds':'장음을 청진하겠습니다',
+    'rebound':'복부 반발통을 확인하겠습니다',
+    'murphy':'머피 징후를 확인하겠습니다',
+    'mcburney':'맥버니 압통을 확인하겠습니다',
+    'spleen':'비장 비대를 촉진하겠습니다',
+    'jvp':'경정맥 팽대를 확인하겠습니다',
+    'pretibial':'경골 앞 부종을 확인하겠습니다',
+    'conjunctiva':'결막 창백을 확인하겠습니다',
+    'sclera':'공막 황달을 확인하겠습니다',
+    'skin_turgor':'피부 긴장도를 확인하겠습니다',
+    'striae':'복부 자주색 선조를 시진하겠습니다',
+    'face':'안면 기형을 시진하겠습니다',
+    'nystagmus':'안구진탕을 확인하겠습니다',
+    'speech':'구음장애를 확인하겠습니다',
+    'cognition':'간이 인지기능을 평가하겠습니다',
+    'achilles':'아킬레스건 반사를 확인하겠습니다',
+    'babinski':'바빈스키 반사를 확인하겠습니다',
+    'sensation':'하지 감각을 확인하겠습니다',
+    'slr':'하지 직거상 검사를 하겠습니다',
+    'spine':'척추 압통을 확인하겠습니다',
+    'sinus':'부비동 압통을 확인하겠습니다',
+    'capillary':'모세혈관 재충전 시간을 확인하겠습니다',
 }
-EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 3~5개 선택하세요. 환자의 호소와 관련된 계통(심장·폐·복부·신경 등)을 고르게 포함하고, 호소 부위에 직접 맞는 진찰(예: 눈 증상이면 안구 운동, 옆구리 통증이면 옆구리 두드림 통증)을 먼저 고릅니다. "
+EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 5~8개 선택하세요. 호소 부위에 직접 맞는 진찰(예: 눈 증상이면 안구 운동, 옆구리 통증이면 옆구리 두드림 통증)과 주진단 가설을 확인하는 진찰을 먼저 고르고, 위험한 감별진단을 배제하는 진찰, 관련 계통(심장·폐·복부·신경 등)의 기본 진찰을 이어서 고릅니다. 중요한 순서대로 씁니다. "
     "제공된 catalog의 키만 선택합니다. 없는 동작/검사를 만들지 마세요. 이미 확인한 정보는 반복하지 않습니다. "
     'JSON 하나만: {"ids":["키1","키2"]}. 필요 없으면 빈 배열. catalog=' + json.dumps(EXAM_CATALOG,ensure_ascii=False))
 
@@ -543,6 +581,21 @@ def choose_question(client, session, transcript, used):
     return None
 
 
+def review_questions(client, session, transcript):
+    """One planned batch of questions on the complaint and its pertinent positives/negatives (topics review_1..)."""
+    result = parse_json(brief_call(client, REVIEW_PROMPT, situation(session, transcript), 6000, 'medium')) or {}
+    questions = result.get('questions') if isinstance(result, dict) else None
+    chosen = []
+    for text in questions if isinstance(questions, list) else []:
+        if not isinstance(text, str):
+            continue
+        text = unicodedata.normalize('NFC', text).strip()
+        if (0 < len(text) <= MAX_CHARS and asks(text) and not repeated_question(text, transcript)
+                and not any(similar(text, old) for _, old in chosen)):
+            chosen.append((f'review_{len(chosen) + 1}', text))
+    return chosen[:MAX_REVIEW]
+
+
 def follow_up_time(source):
     """(number, unit) of the first interval written in P.follow_up, or None. Never chooses a new interval."""
     words = {'one': '1', 'two': '2', 'three': '3', 'four': '4'}
@@ -612,7 +665,9 @@ def patient_explanations(client, note, diagnosis):
     return output
 
 
-MAX_EXAMS = 5         # physical exams after the history
+MAX_EXAMS = 8         # physical exams after the history
+MAX_REVIEW = 8        # planned questions on the complaint and pertinent positives/negatives
+MAX_ADAPTIVE = 3      # one-at-a-time follow-up questions after everything planned
 CLOSING_LINES = 6     # turns kept for the planned explanation lines
 HISTORY_STOP = MAX_EXAMS + CLOSING_LINES   # stop asking history when this many turns are left
 MAX_EMPATHY = 3       # short acknowledgments in front of questions, per visit
@@ -763,14 +818,19 @@ def consult(client, model):
     queue = history_queue(session['initial']['opening'])
     if any(key=='smoking' and '가정' in question for key,question in queue):
         used.add('alcohol')
-    adaptive_count=0
-    for _ in range(20):
+    adaptive_count, reviewed = 0, False
+    for _ in range(60):
         if remaining <= HISTORY_STOP or seconds_left(session) <= TIME_MARGIN:
             break
         try:
+            if not reviewed and (not queue or queue[0][0] == 'past'):
+                # The complaint itself comes right after the worry (and the medication review), before the routine history.
+                reviewed = True
+                queue[0:0] = review_questions(client, session, transcript)
+                continue
             if queue:
                 step=queue.pop(0)
-            elif adaptive_count < 5:
+            elif adaptive_count < MAX_ADAPTIVE:
                 step=choose_question(client, session, transcript, used)
                 adaptive_count += 1
             else:

@@ -33,6 +33,8 @@ class PhaseEndpoint(Endpoint):
         system = messages[0]['content']
         if system.startswith('You are interviewing a patient'):
             reply = next(self.replies, {'action': 'DONE'})
+        elif system.startswith('You plan the next interview questions'):
+            reply = {'questions': []}
         elif 'catalog=' in system:
             reply = {'ids': []}
         elif system.startswith(('Choose the most likely causal', 'Review the draft causal')):

@@ -165,7 +165,7 @@ class ClosingReplyTests(unittest.TestCase):
         sim, spoken = run_closing(lambda q: UNKNOWN)
         self.assertEqual(sim.doctor.reply_calls, 0)
 
-    def test_up_to_five_exams_are_done_and_the_closing_still_fits(self):
+    def test_up_to_max_exams_are_done_and_the_closing_still_fits(self):
         ids = ['heart', 'lungs', 'abdomen', 'thyroid', 'eyes', 'tremor']
         sim, spoken = run_closing(lambda q: UNKNOWN, exam_ids=ids)
         self.assertEqual(sim.exams, [run.EXAM_CATALOG[k] for k in ids[:run.MAX_EXAMS]])
@@ -188,7 +188,7 @@ class ClosingReplyTests(unittest.TestCase):
 
 class FlowTests(unittest.TestCase):
     def test_fixed_history_precedes_model_done_and_actual_explanations(self):
-        sim, spoken, result = run_consult(20)
+        sim, spoken, result = run_consult(30)
         required = [q for _, q in run.history_queue(sim.public_session()['initial']['opening'])]
         self.assertEqual(spoken[:len(required)], required)
         closing = spoken[len(required):]

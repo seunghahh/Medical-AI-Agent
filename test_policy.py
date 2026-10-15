@@ -90,6 +90,20 @@ class PolicyTests(unittest.TestCase):
         self.assertIn('alcohol',adult)
         for question in [*topics.values(),*adult.values()]:self.assertLessEqual(len(question),30)
 
+    def test_review_questions_drop_long_repeated_and_duplicate_lines(self):
+        c=Scripted([{'questions':['식욕은 어떤가요?','식욕은 어떤가요?','잠은 잘 주무시나요?',
+            '가'*31+'?','언제부터 아팠나요?','더위 때문에 힘들어요.','목 앞이 붓거나 이물감이 있나요?',3]}])
+        session={'initial':{'opening':'살이 빠져요.','vital_signs':'미제공'}}
+        got=run.review_questions(c,session,['턴 1 의사: 언제부터 아팠나요?','환자: 석 달 전부터요.'])
+        self.assertEqual(got,[('review_1','식욕은 어떤가요?'),('review_2','잠은 잘 주무시나요?'),
+                              ('review_3','목 앞이 붓거나 이물감이 있나요?')])
+
+    def test_adults_get_chronic_family_and_work_history_but_children_do_not(self):
+        adult=dict(run.history_queue('서른두 살 여자이고 체중이 줄었어요.'))
+        self.assertTrue({'chronic','family_chronic','occupation'}<=set(adult))
+        child=dict(run.history_queue('여섯 살 남자아이이고 키가 작아요.'))
+        self.assertFalse({'chronic','family_chronic','occupation','alcohol'}&set(child))
+
     def test_positive_relative_not_erased_by_other_relative_negative(self):
         self.assertTrue(run.family_followups('아빠가 어릴 때 키가 작았다. 다른 가족에는 없다.'))
         self.assertFalse(run.family_followups('가족 중 비슷한 증상은 없다.'))
