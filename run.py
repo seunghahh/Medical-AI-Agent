@@ -402,7 +402,7 @@ EXAM_CATALOG = {
     'pharynx':'인두를 시진하겠습니다',
     'joints':'관절 부종을 시진하겠습니다',
 }
-EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 1~3개 선택하세요. "
+EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 3~5개 선택하세요. 환자의 호소와 관련된 계통(심장·폐·복부·신경 등)을 고르게 포함합니다. "
     "제공된 catalog의 키만 선택합니다. 없는 동작/검사를 만들지 마세요. 이미 확인한 정보는 반복하지 않습니다. "
     'JSON 하나만: {"ids":["키1","키2"]}. 필요 없으면 빈 배열. catalog=' + json.dumps(EXAM_CATALOG,ensure_ascii=False))
 
@@ -574,6 +574,16 @@ def patient_explanations(client, note, diagnosis):
     return output
 
 
+MAX_EXAMS = 5         # physical exams after the history
+CLOSING_LINES = 5     # turns kept for the planned explanation lines
+HISTORY_STOP = MAX_EXAMS + CLOSING_LINES   # stop asking history when this many turns are left
+MAX_EMPATHY = 3       # short acknowledgments in front of questions, per visit
+EMPATHY = (
+    (re.compile(r'아프|아파|아팠|통증|쑤시|저리|따갑|쓰리'), ('아프시죠.', '많이 아프시죠.')),
+    (re.compile(r'걱정|무서|두려|불안'), ('걱정되시죠.', '많이 걱정되시죠.')),
+    (re.compile(r'힘들|지쳐|피곤|괴로|잠을 못|못 자'), ('힘드시죠.', '많이 힘드시죠.')),
+)
+NEGATED = re.compile(r'않|없|아니|괜찮')
 INVITATION = '궁금한 점은 편하게 얘기해 주셔도 돼요.'
 CONCERN_QUESTION = '걱정되셨겠어요. 가장 걱정되는 점은 무엇인가요?'
 MAX_ANSWERS = 2      # replies to what the patient says during the closing
@@ -587,6 +597,34 @@ REPLY_PROMPT = ("You write one short Korean reply from a doctor to a patient dur
     "Start from the patient's own words (for example that they were worried about something), then say only what the plan supports: "
     'the cause will be checked and the next steps decided together. Never contradict the plan or the working diagnosis. '
     'If you cannot reply safely, return {"text":""}.')
+
+
+def empathy_prefix(transcript, content, used):
+    """A short acknowledgment to put in front of the next question when the patient's last answer voiced pain, worry or
+    exhaustion. Rule-based and only when the whole line still fits in 30 characters; at most MAX_EMPATHY per visit."""
+    if used >= MAX_EMPATHY or content.startswith('걱정되셨겠어요') or not transcript or not transcript[-1].startswith('환자: '):
+        return ''
+    answer = transcript[-1][len('환자: '):]
+    if UNKNOWN_REPLY.search(answer) or NEGATED.search(answer):
+        return ''
+    if len(transcript) >= 2 and re.match(r'턴 \d+ 의사: (?:많이 )?(?:아프시죠|걱정되시죠|힘드시죠|걱정되셨겠어요)', transcript[-2]):
+        return ''                              # not on two questions in a row: that sounds like a script
+    for pattern, phrases in EMPATHY:
+        if pattern.search(answer):
+            for phrase in reversed(phrases):          # prefer the warmer, longer phrase when it fits
+                if len(phrase) + 1 + len(content) <= MAX_CHARS:
+                    return phrase + ' '
+            return ''
+    return ''
+
+
+def patient_facts(session, transcript):
+    """The opening plus up to six usable answers, for a one-line summary; '' when the patient told us too little."""
+    answers = [line[len('환자: '):].strip() for line in transcript
+               if line.startswith('환자: ') and not UNKNOWN_REPLY.search(line) and len(line) > 8]
+    if len(answers) < 2:
+        return ''
+    return (session['initial']['opening'] + ' ' + ' '.join(answers[:6]))[:700]
 
 
 def concern_words(transcript):
@@ -607,9 +645,11 @@ def needs_answer(text):
 def reply_message(client, kind, words, note, diagnosis, sent):
     """One sentence answering what the patient just said, from the plan only. Falls back to a fixed, fact-free line,
     and to None when that line was already said."""
-    task = ('The patient was asked for their main worry; acknowledge it in their own terms.' if kind == 'concern' else
-            'The patient just asked something or voiced a worry; answer it directly if the plan allows, '
-            'otherwise say it will be confirmed by the tests and the doctor.')
+    task = {'concern': 'The patient was asked for their main worry; acknowledge it in their own terms.',
+            'summary': 'Summarize in one sentence what the patient told you (their main symptoms and how long), '
+                       "in the patient's own terms, so they feel heard. Example style: 석 달 동안 살이 빠지셨군요.",
+            'answer': 'The patient just asked something or voiced a worry; answer it directly if the plan allows, '
+                      'otherwise say it will be confirmed by the tests and the doctor.'}[kind]
     request = json.dumps({'task': task, 'patient_words': words, 'working_diagnosis': diagnosis,
                           'plan': {key: note['P'][key] for key in ('tests', 'treatment', 'follow_up')}}, ensure_ascii=False)
     for attempt in range(2):
@@ -627,7 +667,8 @@ def reply_message(client, kind, words, note, diagnosis, sent):
             return text
         request = request[:-1] + ', "previous_attempt": ' + json.dumps(text, ensure_ascii=False) + \
             ', "fix": "one complete sentence of at most 30 characters, plain, no promise"}'
-    return SAFE_REPLIES[kind] if SAFE_REPLIES[kind] not in sent else None
+    fallback = SAFE_REPLIES.get(kind)      # a summary has no neutral fallback: better silent than wrong
+    return fallback if fallback and fallback not in sent else None
 
 
 DOSE_PATTERN = re.compile(r'\d[\d.\s–~−-]*\s*(?:mg|mcg|μg|µg|밀리그램|마이크로그램|%)',re.I)
@@ -657,7 +698,7 @@ def consult(client, model):
         used.add('alcohol')
     adaptive_count=0
     for _ in range(20):
-        if remaining <= 8 or seconds_left(session) <= TIME_MARGIN:
+        if remaining <= HISTORY_STOP or seconds_left(session) <= TIME_MARGIN:
             break
         try:
             if queue:
@@ -679,6 +720,9 @@ def consult(client, model):
             used.add(topic)
             continue
         used.add(topic)
+        prefix = empathy_prefix(transcript, content, trace.setdefault('empathy', 0))
+        trace['empathy'] += bool(prefix)
+        content = prefix + content
         try:
             reply = with_retry(client.say, content, request_id=str(uuid.uuid4()))
         except NovaError as exc:
@@ -699,7 +743,9 @@ def consult(client, model):
         ids = chosen.get('ids', [])
         exams = [EXAM_CATALOG[k] for k in ids if isinstance(k,str) and k in EXAM_CATALOG] if isinstance(ids,list) else []
         attempted = set()
-        for content in exams[:3] if isinstance(exams,list) else []:
+        for content in exams[:MAX_EXAMS] if isinstance(exams,list) else []:
+            if remaining <= CLOSING_LINES:
+                break   # the closing explanation needs these turns
             if not isinstance(content,str):
                 continue
             content = unicodedata.normalize('NFC',content).strip()
@@ -728,9 +774,18 @@ def consult(client, model):
     if remaining and seconds_left(session) > 60:
         try:
             queue = list(patient_explanations(client, note, diagnosis))
-            worry = concern_words(transcript)
-            if worry and remaining > len(queue):   # a lead line about the patient's worry, only if every planned line still fits
-                queue.insert(0, ('concern', reply_message(client, 'concern', worry, note, diagnosis, set())))
+            wanted = []                            # lead lines, only as many as fit after every planned line
+            if patient_facts(session, transcript):
+                wanted.append(('summary', patient_facts(session, transcript)))
+            if concern_words(transcript):
+                wanted.append(('concern', concern_words(transcript)))
+            room = remaining - len(queue)
+            lead = []
+            for kind, words in (wanted[-room:] if room > 0 else []):
+                message = reply_message(client, kind, words, note, diagnosis, set())
+                if message:
+                    lead.append((kind, message))
+            queue[0:0] = lead
             queue.append(('invite', INVITATION))
             sent, answers = set(), 0
             while queue:
