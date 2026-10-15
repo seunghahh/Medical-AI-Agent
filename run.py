@@ -574,6 +574,62 @@ def patient_explanations(client, note, diagnosis):
     return output
 
 
+INVITATION = '궁금한 점은 편하게 얘기해 주셔도 돼요.'
+CONCERN_QUESTION = '걱정되셨겠어요. 가장 걱정되는 점은 무엇인가요?'
+MAX_ANSWERS = 2      # replies to what the patient says during the closing
+SAFE_REPLIES = {'concern': '걱정되셨겠어요. 함께 확인해 가요.', 'answer': '검사로 정확히 확인하고 함께 정해요.'}
+WORRIED = re.compile(r'\?|걱정(?:돼|되|이|스)|무서|두려|불안|있을까요|될까요|할까요|괜찮을까요|어떡')
+UNKNOWN_REPLY = re.compile(r'미확인|UNKNOWN|자료.{0,8}없')
+REPLY_PROMPT = ("You write one short Korean reply from a doctor to a patient during a first visit. "
+    'Return exactly one JSON object: {"text":"한국어 한 문장"}. '
+    'The sentence is complete, ends in 요 or 죠, and is at most 30 characters including spaces. '
+    'No question, no numbers, no drug names or doses, no new diagnosis, and no promise of a result or cure. '
+    "Start from the patient's own words (for example that they were worried about something), then say only what the plan supports: "
+    'the cause will be checked and the next steps decided together. Never contradict the plan or the working diagnosis. '
+    'If you cannot reply safely, return {"text":""}.')
+
+
+def concern_words(transcript):
+    """What the patient said when asked for their main worry ('' if there is nothing usable)."""
+    for number, line in enumerate(transcript):
+        if line.endswith('의사: ' + CONCERN_QUESTION):
+            follow = transcript[number + 1] if number + 1 < len(transcript) else ''
+            text = follow[len('환자: '):].strip() if follow.startswith('환자: ') else ''
+            return '' if len(text) < 4 or UNKNOWN_REPLY.search(text) else text
+    return ''
+
+
+def needs_answer(text):
+    """The patient asked something or voiced a worry, and the answer is a real one."""
+    return bool(WORRIED.search(text)) and not UNKNOWN_REPLY.search(text)
+
+
+def reply_message(client, kind, words, note, diagnosis, sent):
+    """One sentence answering what the patient just said, from the plan only. Falls back to a fixed, fact-free line,
+    and to None when that line was already said."""
+    task = ('The patient was asked for their main worry; acknowledge it in their own terms.' if kind == 'concern' else
+            'The patient just asked something or voiced a worry; answer it directly if the plan allows, '
+            'otherwise say it will be confirmed by the tests and the doctor.')
+    request = json.dumps({'task': task, 'patient_words': words, 'working_diagnosis': diagnosis,
+                          'plan': {key: note['P'][key] for key in ('tests', 'treatment', 'follow_up')}}, ensure_ascii=False)
+    for attempt in range(2):
+        try:
+            value = parse_json(brief_call(client, REPLY_PROMPT, request, 2048, 'medium')) or {}
+        except NovaError:
+            break
+        text = unicodedata.normalize('NFC', str(value.get('text') or '')).strip()
+        if not text:
+            break
+        if (len(text) <= MAX_CHARS and re.search(r'(?:요|죠|니다)[.!。]?$', text)
+                and not re.search(r'\?|나요|습니까|할까요|세요|말씀해|알려', text)
+                and not re.search(r'\d|mg|밀리그램', text, re.I)
+                and not re.search(r'완치|반드시|틀림없|걱정\s*마|괜찮을\s*거', text) and text not in sent):
+            return text
+        request = request[:-1] + ', "previous_attempt": ' + json.dumps(text, ensure_ascii=False) + \
+            ', "fix": "one complete sentence of at most 30 characters, plain, no promise"}'
+    return SAFE_REPLIES[kind] if SAFE_REPLIES[kind] not in sent else None
+
+
 DOSE_PATTERN = re.compile(r'\d[\d.\s–~−-]*\s*(?:mg|mcg|μg|µg|밀리그램|마이크로그램|%)',re.I)
 
 
@@ -671,13 +727,30 @@ def consult(client, model):
             note['P']['treatment']='실제 복용약·복용량과 관련 금기를 확인한 후 담당의와 치료 방향을 정합니다.'
     if remaining and seconds_left(session) > 60:
         try:
-            for topic, content in patient_explanations(client, note, diagnosis):
+            queue = list(patient_explanations(client, note, diagnosis))
+            worry = concern_words(transcript)
+            if worry and remaining > len(queue):   # a lead line about the patient's worry, only if every planned line still fits
+                queue.insert(0, ('concern', reply_message(client, 'concern', worry, note, diagnosis, set())))
+            queue.append(('invite', INVITATION))
+            sent, answers = set(), 0
+            while queue:
+                topic, content = queue.pop(0)
+                if not content or content in sent:
+                    continue
                 if remaining <= 0 or seconds_left(session) <= 30:
                     break
+                sent.add(content)
                 reply = with_retry(client.say, content, request_id=str(uuid.uuid4()))
                 trace['explanation'].append({'topic':topic,'content':content,'reply':reply})
                 remaining = min(remaining-1, reply.get('turns_remaining',remaining-1))
                 note['P']['education'] += f'\n[실제 설명/{topic}] {content}\n[환자 반응] {reply["content"]}'
+                # Answer what the patient asks or worries about, but never at the cost of a planned line.
+                essential = sum(1 for kind, _ in queue if kind != 'invite')
+                if answers < MAX_ANSWERS and remaining > essential and needs_answer(reply['content']):
+                    answer = reply_message(client, 'answer', reply['content'], note, diagnosis, sent)
+                    if answer:
+                        queue.insert(0, ('answer', answer))
+                        answers += 1
         except NovaError as exc:
             trace['explanation_error'] = exc.code
     return with_retry(client.diagnose, note=note, diagnosis=diagnosis, request_id=str(uuid.uuid4()))
