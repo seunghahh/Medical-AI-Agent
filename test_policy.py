@@ -105,11 +105,21 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(run.parse_plan(text)['P']['tests'],'- TSH : confirm'+chr(10)+'- ECG : tachycardia')
         self.assertEqual(run.parse_json(text)['P']['follow_up'],'z')
 
-    def test_adults_get_chronic_family_and_work_history_but_children_do_not(self):
+    def test_adults_get_one_merged_past_and_family_question_and_work_history_but_children_do_not(self):
         adult=dict(run.history_queue('서른두 살 여자이고 체중이 줄었어요.'))
-        self.assertTrue({'chronic','family_chronic','occupation'}<=set(adult))
+        self.assertIn('고혈압',adult['past']); self.assertIn('고혈압',adult['family'])
+        self.assertIn('occupation',adult)
+        self.assertFalse({'chronic','family_chronic'}&set(adult))              # no near-duplicate second question
         child=dict(run.history_queue('여섯 살 남자아이이고 키가 작아요.'))
-        self.assertFalse({'chronic','family_chronic','occupation','alcohol'}&set(child))
+        self.assertNotIn('고혈압',child['past'])
+        self.assertFalse({'occupation','alcohol'}&set(child))
+        self.assertEqual(len(run.family_followups('어머니가 같은 병으로 약을 드세요.')),1)
+        from grounding import source_record
+        items=[{'id':'opening','kind':'opening','question':'','value':'x','raw':'x'},
+               {'id':'turn1','kind':'say','question':adult['past'],'value':'없어요','raw':'없어요'},
+               {'id':'turn2','kind':'say','question':adult['family'],'value':'없어요','raw':'없어요'}]
+        note=source_record(items)
+        self.assertIn('turn1',note['S']['pmh']); self.assertIn('turn2',note['S']['fh'])   # still filed in the right sections
 
     def test_a_reply_sees_the_whole_plan_field_and_what_was_already_said(self):
         c=Scripted([{'text':'대부분 치료로 좋아질 수 있어요.'}])

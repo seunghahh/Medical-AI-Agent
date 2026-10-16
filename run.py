@@ -320,16 +320,17 @@ HISTORY_TOPICS = ('concern', 'onset', 'course', 'associated_1', 'associated_2',
                   'prior_care', 'treatment_safety')
 BASIC_REVIEW = (
     ('past','이전에 앓은 병이나 수술받은 적이 있나요?'),
-    ('chronic','고혈압·당뇨·간염·결핵 병력이 있나요?'),
     ('medications','현재 쓰는 약이나 보충제가 있나요?'),
     ('allergy','약이나 음식에 알레르기가 있나요?'),
     ('family','가족 중 비슷한 증상이 있는 분이 있나요?'),
-    ('family_chronic','가족 중 고혈압·당뇨·뇌졸중이 있나요?'),
     ('smoking','담배를 피우시나요?'),
     ('alcohol','술은 얼마나 자주 마시나요?'),
     ('occupation','직업은 무엇인가요?'),
 )
-ADULT_ONLY = {'chronic', 'family_chronic', 'alcohol', 'occupation'}
+ADULT_ONLY = {'alcohol', 'occupation'}
+# One question each instead of two near-duplicates: an adult's common chronic diseases go with the past/family question.
+ADULT_WORDING = {'past': '고혈압·당뇨 등 앓는 병이나 수술력 있나요?',
+                 'family': '가족 중 비슷한 병이나 고혈압·당뇨가 있나요?'}
 
 
 def age_in_years(text):
@@ -360,6 +361,8 @@ def history_queue(opening):
     for key,question in BASIC_REVIEW:
         if child and key in ADULT_ONLY:
             continue
+        if not child:
+            question=ADULT_WORDING.get(key,question)
         if child and key=='smoking':
             question='가정에서 담배 연기 노출이 있나요?'
         if medication and key=='medications':
@@ -382,8 +385,7 @@ def family_followups(answer):
             return []
     if not re.search(r'아빠|아버지|엄마|어머니|형제|자매|부모|가족',answer):
         return []
-    return [('family_course','그 가족분의 증상이 언제 어떻게 변했나요?'),
-            ('family_current','그 가족분은 지금은 상태가 어떤가요?')]
+    return [('family_course','그 가족분의 병은 어떻게 진행됐나요?')]
 
 
 MEDICATION_REVIEW = (
@@ -484,7 +486,7 @@ EXAM_CATALOG = {
     'calf':'종아리 압통과 부종을 확인하겠습니다',
     'spo2':'산소포화도를 측정하겠습니다',
 }
-EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 5~8개 선택하세요. 호소 부위에 직접 맞는 진찰(예: 눈 증상이면 안구 운동, 옆구리 통증이면 옆구리 두드림 통증)과 주진단 가설을 확인하는 진찰을 먼저 고르고, 위험한 감별진단을 배제하는 진찰, 관련 계통(심장·폐·복부·신경 등)의 기본 진찰을 이어서 고릅니다. 중요한 순서대로 씁니다. "
+EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 3~6개 선택하세요. 결과에 따라 진단이나 처치가 달라질 진찰만 고르고, 그렇지 않은 진찰은 개수를 채우려고 넣지 마세요. 호소 부위에 직접 맞는 진찰(예: 눈 증상이면 안구 운동, 옆구리 통증이면 옆구리 두드림 통증)과 주진단 가설을 확인하는 진찰을 먼저 고르고, 위험한 감별진단을 배제하는 진찰, 관련 계통(심장·폐·복부·신경 등)의 기본 진찰을 이어서 고릅니다. 중요한 순서대로 씁니다. "
     "각 진찰은 서로 다른 정보를 주어야 합니다. 같은 부위를 방식만 바꿔 반복하지 말고(예: 복부 압통을 골랐다면 반발통·머피 징후는 "
     "그것으로 감별이 달라질 때만), 호소와 무관한 계통은 위험한 감별진단을 배제할 때만 고릅니다. "
     "제공된 catalog의 키만 선택합니다. 없는 동작/검사를 만들지 마세요. 이미 확인한 정보는 반복하지 않습니다. "
@@ -707,7 +709,7 @@ def patient_explanations(client, note, diagnosis):
     return output
 
 
-MAX_EXAMS = 8         # physical exams after the history
+MAX_EXAMS = 6         # physical exams after the history
 MAX_REVIEW = 8        # planned questions on the complaint and pertinent positives/negatives
 MAX_ADAPTIVE = 2      # one-at-a-time follow-up questions after everything planned
 MIN_REVIEW = 4        # planned questions on the complaint, however long the fixed history is
