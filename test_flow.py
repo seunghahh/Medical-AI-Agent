@@ -77,10 +77,12 @@ UNKNOWN = '미확인: 원자료에 해당 정보가 없습니다.'
 
 
 class ClosingReplyTests(unittest.TestCase):
-    def test_the_closing_opens_with_a_line_about_the_patients_own_worry(self):
+    def test_the_worry_is_answered_right_after_the_cause(self):
         sim, spoken = run_closing(lambda q: '약이 자꾸 늘어서 걱정돼요.' if q == run.CONCERN_QUESTION else UNKNOWN)
         closing = spoken[len(run.history_queue(sim.public_session()['initial']['opening'])):]
-        self.assertEqual(closing[0], '약 걱정을 함께 확인해 가요.')
+        self.assertEqual(closing[0], run.TRANSITION)                           # too little history to reflect back
+        at = closing.index('약 걱정을 함께 확인해 가요.')
+        self.assertEqual(closing[at - 1], '원인은 더 확인이 필요해요.')        # the cause line comes first
         self.assertEqual(closing[-1], run.INVITATION)
         self.assertIn('[실제 설명/concern]', sim.record['P']['education'])
         self.assertEqual(sim.doctor.reply_calls, 1)
@@ -103,7 +105,8 @@ class ClosingReplyTests(unittest.TestCase):
         self.assertEqual(spoken[-1], run.INVITATION)
 
     def test_an_unsafe_or_unusable_reply_is_replaced_by_a_fixed_neutral_line(self):
-        for bad in ('이 병은 반드시 완치돼요.', '혹시 다른 증상이 있나요?', '약 20mg을 드세요.', '이건 한 문장으로 말하기에는 너무 길고 복잡한 설명이라서요.'):
+        for bad in ('이 병은 반드시 완치돼요.', '혹시 다른 증상이 있나요?', '약 20mg을 드세요.', '이건 한 문장으로 말하기에는 너무 길고 복잡한 설명이라서요.',
+                    '암은 아니에요.', '큰 병은 없어요.'):
             sim, spoken = run_closing(lambda q: '약이 걱정돼요.' if q == run.CONCERN_QUESTION else UNKNOWN, text=bad)
             self.assertIn(run.SAFE_REPLIES['concern'], spoken, bad)
             self.assertNotIn(bad, spoken)
@@ -140,25 +143,25 @@ class ClosingReplyTests(unittest.TestCase):
         self.assertTrue(all(len(m) <= run.MAX_CHARS for m in spoken))
         self.assertTrue(all(any(m.endswith(a) for a in asked) for m in prefixed))   # still one of the planned questions
 
-    def test_the_worry_line_is_the_only_lead_when_both_a_worry_and_other_answers_exist(self):
+    def test_the_summary_opens_the_exam_and_the_worry_is_answered_in_the_closing(self):
         queue = run.history_queue('배가 아파요')
         said = {queue[0][1]: '약이 자꾸 늘어서 걱정돼요.', queue[1][1]: '석 달 전부터 살이 빠졌어요.', queue[2][1]: '두근거림도 있어요.'}
         def answer(question):
             return next((said[known] for known in said if question.endswith(known)), UNKNOWN)
         sim, spoken = run_closing(answer)
         closing = spoken[len(queue):]
-        self.assertEqual(closing[0], '약 걱정을 함께 확인해 가요.')
-        self.assertNotIn('석 달 동안 살이 빠지셨군요.', spoken)               # no second, near-identical opener
-        self.assertEqual(sim.doctor.reply_calls, 1)
+        self.assertEqual(closing[0], '석 달 동안 살이 빠지셨군요.' + run.EXAM_CUE)
+        self.assertIn('약 걱정을 함께 확인해 가요.', closing[1:])
+        self.assertEqual(sim.doctor.reply_calls, 2)                            # the summary and the worry answer
         self.assertEqual(closing[-1], run.INVITATION)
 
-    def test_a_one_line_summary_opens_the_closing_when_there_is_no_usable_worry(self):
+    def test_a_one_line_summary_opens_the_exam_when_there_is_no_usable_worry(self):
         queue = run.history_queue('배가 아파요')
         said = {queue[1][1]: '석 달 전부터 살이 빠졌어요.', queue[2][1]: '두근거림도 있어요.'}
         def answer(question):
             return next((said[known] for known in said if question.endswith(known)), UNKNOWN)
         sim, spoken = run_closing(answer)
-        self.assertEqual(spoken[len(queue)], '석 달 동안 살이 빠지셨군요.')
+        self.assertEqual(spoken[len(queue)], '석 달 동안 살이 빠지셨군요.' + run.EXAM_CUE)
         self.assertEqual(sim.doctor.reply_calls, 1)
 
     def test_no_summary_when_the_patient_told_us_too_little(self):
@@ -191,10 +194,11 @@ class FlowTests(unittest.TestCase):
         sim, spoken, result = run_consult(30)
         required = [q for _, q in run.history_queue(sim.public_session()['initial']['opening'])]
         self.assertEqual(spoken[:len(required)], required)
-        closing = spoken[len(required):]
+        self.assertEqual(spoken[len(required)], run.TRANSITION)   # the exam is announced before it starts
+        closing = spoken[len(required) + 1:]
         self.assertEqual(len(closing), 6)                       # five planned lines and the closing invitation
         self.assertEqual(closing[-1], run.INVITATION)
-        self.assertTrue(all(not asks(text) for text in closing))
+        self.assertTrue(all(not asks(text) for text in closing[:-1]))   # only the last line asks (understanding check)
         self.assertIn('2주 뒤 결과와 경과를 확인해요.', closing)
         self.assertEqual(result['status'], 'completed')
         self.assertNotIn('HIDDEN', json.dumps(sim.doctor.messages))
@@ -205,7 +209,7 @@ class FlowTests(unittest.TestCase):
         self.assertLessEqual(sim.turns, 8)
         self.assertEqual(len(spoken), 6)
         self.assertEqual(spoken[-1], run.INVITATION)
-        self.assertTrue(all(not asks(text) for text in spoken))
+        self.assertTrue(all(not asks(text) for text in spoken[:-1]))
         self.assertEqual(result['status'], 'completed')
 
     def test_invalid_explanation_is_repaired_without_asking_a_question(self):
@@ -225,7 +229,8 @@ class FlowTests(unittest.TestCase):
         sim, spoken, result = run_consult(20, fail_explanation=True)
         self.assertIsNotNone(sim.record)
         self.assertEqual(result['status'], 'completed')
-        self.assertTrue(all(asks(text) for text in spoken))
+        self.assertIn(run.TRANSITION, spoken)
+        self.assertTrue(all(asks(text) for text in spoken if text != run.TRANSITION))
 
     def test_rag_can_be_switched_off(self):
         with patch.dict('os.environ', {'NOVA_RAG': '0'}):

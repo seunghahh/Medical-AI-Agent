@@ -345,7 +345,7 @@ def history_queue(opening):
     age=age_in_years(opening)
     child=age is not None and age<12
     medication=bool(re.search(r'처방|수면제|진통제|약을|약이|복용|medication|medicine|pills?',opening,re.I))
-    queue=[('concern','걱정되셨겠어요. 가장 걱정되는 점은 무엇인가요?')]
+    queue=[('concern',CONCERN_QUESTION)]
     if medication:
         queue.extend(MEDICATION_REVIEW)
     for key,question in BASIC_REVIEW:
@@ -401,7 +401,7 @@ REVIEW_PROMPT = """You plan the next interview questions of a first outpatient v
 Read the opening statement and every answer so far, then list the questions still worth asking, most important first:
 1. The chief complaint, where the opening has not already said it: onset, course, character and severity, timing, what makes it better or worse, and any care already received for it.
 2. Pertinent positives AND negatives for the likely causes and the dangerous causes of this presentation: general symptoms (appetite, weight, sleep, fatigue, fever), mood and stress, and the organ systems this complaint involves.
-3. Facts the diagnosis or plan depends on that are not symptoms, only when relevant: e.g. the parents' heights for a child's growth, caffeine or other substances, work exposures, travel, sexual history, sleep habits.
+3. Facts the diagnosis or plan depends on that are not symptoms, only when relevant: e.g. exposures at work or home, travel, sick contacts, substances, sexual or obstetric history, family measurements or patterns, recent injuries or procedures.
 4. How the problem affects daily life, if not yet known.
 Rules: Korean, at most 30 characters including spaces, about the patient's own experience; one symptom (or two closely related ones) per question so a yes/no answer is unambiguous. Never ask again about anything already stated or asked. For a child, ask the guardian about the child and never ask adult smoking/drinking questions. Never ask the patient to explain medical knowledge, diagnoses or which tests to do. UNKNOWN means unavailable, not normal.
 Return exactly {"questions":["질문1","질문2"]} with at most 10 questions; an empty list when nothing relevant remains."""
@@ -631,7 +631,7 @@ def patient_explanations(client, note, diagnosis):
     fields = (
         ('cause', diagnosis, '가장 유력한 진단을 쉬운 말로 풀이하고 가능성으로 말하세요. 다른 원인을 추가하지 마세요.'),
         ('next', note['P']['tests'], '가장 필요한 검사 하나와 그 목적을 설명하세요.'),
-        ('treatment', note['P']['treatment'], '현재 가장 유력한 진단의 치료 방향 하나를 쉬운 말로 설명하세요(형식 예시: 확인되면 약으로 호르몬을 조절해요). '
+        ('treatment', note['P']['treatment'], '현재 가장 유력한 진단의 치료 방향 하나를 쉬운 말로 설명하세요(형식 예시: 결과를 보고 약으로 조절할지 정해요). '
          '약 이름·용량은 쓰지 말고 검사 확인 후라는 조건을 유지하세요. 감별에 대한 가정적 치료를 우선하지 마세요. 약이 필요 없다는 계획이면 그렇게 말하세요.'),
         ('follow_up', note['P']['follow_up'], '재진 시점과 확인할 것을 설명하세요. 시점을 바꾸지 마세요.'),
         ('self_care', note['P']['education'],
@@ -684,11 +684,13 @@ EMPATHY = (
     (re.compile(r'힘들|지쳐|피곤|괴로|잠을 못|못 자'), ('힘드시죠.', '많이 힘드시죠.')),
 )
 NEGATED = re.compile(r'않|없|아니|괜찮')
-INVITATION = '궁금한 점은 편하게 얘기해 주셔도 돼요.'
-CONCERN_QUESTION = '걱정되셨겠어요. 가장 걱정되는 점은 무엇인가요?'
+INVITATION = '설명 중 헷갈리거나 궁금한 점 있으세요?'     # checks understanding and invites questions
+CONCERN_QUESTION = '안녕하세요. 어떤 점이 가장 걱정되세요?'
+TRANSITION = '말씀 잘 들었어요. 이제 진찰해 볼게요.'
+EXAM_CUE = ' 이제 진찰해 볼게요.'
 SIMILAR = 0.40      # lines overlapping at least this much count as the same thing
 MAX_ANSWERS = 2      # replies to what the patient says during the closing
-SAFE_REPLIES = {'concern': '걱정되셨겠어요. 함께 확인해 가요.', 'answer': '검사로 정확히 확인하고 함께 정해요.'}
+SAFE_REPLIES = {'concern': '걱정하신 부분은 검사로 꼭 확인해요.', 'answer': '검사로 정확히 확인하고 함께 정해요.'}
 WORRIED = re.compile(r'\?|걱정(?:돼|되|이|스)|무서|두려|불안|있을까요|될까요|할까요|괜찮을까요|어떡')
 UNKNOWN_REPLY = re.compile(r'미확인|UNKNOWN|자료.{0,8}없|확인되지\s*않|확인\s*안|잘\s*모르|모르겠|알 수 없|기억(?:이)?\s*(?:안|나지)')
 REPLY_PROMPT = ("You write one short Korean reply from a doctor to a patient during a first visit. "
@@ -698,13 +700,15 @@ REPLY_PROMPT = ("You write one short Korean reply from a doctor to a patient dur
     'that already appear in the plan. Plain everyday Korean; never contradict the plan or the working diagnosis. '
     'If you cannot reply safely, return {"text":""}.')
 REPLY_TASKS = {
-    'concern': "The patient was asked for their main worry. Acknowledge that worry in their own words and, only if the plan "
-               'supports it, say the cause will be checked and the next steps decided together.',
+    'concern': "patient_words is the patient's main worry, and the likely cause has just been explained. Answer that worry "
+               'directly from the working diagnosis and plan: say in plain words how the likely cause relates to what they '
+               'feared, or which planned check will settle it (style: 걱정하신 부분은 검사로 꼭 확인해요). '
+               'Never rule a feared disease in or out beyond what the plan supports.',
     'summary': "Reflect back, in the patient's own words, their main symptoms and how long they have had them. Do not mention "
-               'the plan, tests, treatment, reassurance, worry or feelings. Example style: 석 달 동안 살이 빠지셨군요.',
+               'the plan, tests, treatment, reassurance, worry or feelings. Example style: 2주 전부터 기침이 계속되셨군요.',
     'answer': 'Answer what the patient just asked or worried about, using only the plan. If they asked when, give the '
               'follow-up time from the plan. If they asked which tests, name the first planned test and its purpose in plain '
-              'words (e.g. 피검사로 갑상샘 호르몬을 확인해요). If they asked how to manage or reduce something, give the safe '
+              'words (e.g. 피검사로 염증이 있는지 확인해요). If they asked how to manage or reduce something, give the safe '
               'direction the plan states (for example changing it gradually). You are the doctor: never refer them to another '
               '"담당의". If the plan does not cover it, say we will decide it together after the results.'}
 
@@ -721,7 +725,7 @@ def similar(first, second):
 def empathy_prefix(transcript, content, used):
     """A short acknowledgment to put in front of the next question when the patient's last answer voiced pain, worry or
     exhaustion. Rule-based and only when the whole line still fits in 30 characters; at most MAX_EMPATHY per visit."""
-    if used >= MAX_EMPATHY or content.startswith('걱정되셨겠어요') or not transcript or not transcript[-1].startswith('환자: '):
+    if used >= MAX_EMPATHY or content in (CONCERN_QUESTION, TRANSITION) or not transcript or not transcript[-1].startswith('환자: '):
         return ''
     answer = transcript[-1][len('환자: '):]
     if UNKNOWN_REPLY.search(answer) or NEGATED.search(answer):
@@ -763,6 +767,18 @@ def concern_words(transcript):
     return ''
 
 
+def transition_line(client, session, transcript):
+    """One line between the history and the exam: what the patient told us, in their words, then that the exam starts.
+    The fixed line when the summary would not fit or the patient told us too little."""
+    facts = patient_facts(session, transcript)
+    if facts:
+        summary = reply_message(client, 'summary', facts, {'P': dict.fromkeys(('tests', 'treatment', 'follow_up', 'education'), '')},
+                                '', set())
+        if summary and len(summary + EXAM_CUE) <= MAX_CHARS:
+            return summary + EXAM_CUE
+    return TRANSITION
+
+
 def needs_answer(text):
     """The patient asked something or voiced a worry, and the answer is a real one."""
     return bool(WORRIED.search(text)) and not UNKNOWN_REPLY.search(text)
@@ -792,7 +808,8 @@ def reply_message(client, kind, words, note, diagnosis, sent):
         if (len(text) <= MAX_CHARS and re.search(r'(?:요|죠|니다)[.!。]?$', text)
                 and not re.search(r'\?|나요|습니까|할까요|세요|말씀해|알려', text)
                 and set(re.findall(r'\d+', text)) <= allowed and not re.search(r'mg|밀리그램', text, re.I)
-                and not re.search(r'완치|반드시|틀림없|걱정\s*마|괜찮을\s*거', text)
+                and not re.search(r'완치|반드시|틀림없|걱정\s*마|괜찮을\s*거|확실히', text)
+                and not re.search(r'(?:암|병|질환)\S{0,3}\s*(?:은|는|이|가)?\s*(?:아니|없)', text)   # never rules a feared disease out
                 and not any(similar(text, old) for old in sent)):
             return text
         request = request[:-1] + ', "previous_attempt": ' + json.dumps(text, ensure_ascii=False) + \
@@ -869,6 +886,16 @@ def consult(client, model):
         remaining = min(remaining-1, reply.get('turns_remaining',remaining-1))
         if topic == 'family':
             queue[0:0] = [(key,q) for key,q in family_followups(reply['content']) if key not in used]
+    if remaining > CLOSING_LINES + 3 and seconds_left(session) > TIME_MARGIN:   # only when exams still fit after it
+        try:
+            line = transition_line(client, session, transcript)
+            reply = with_retry(client.say, line, request_id=str(uuid.uuid4()))
+            turn = reply.get('turn', MAX_TURNS-remaining+1)
+            transcript += [f'턴 {turn} 의사: {line}', f"환자: {reply['content']}"]
+            trace['transition'] = {'content': line, 'reply': reply}
+            remaining = min(remaining-1, reply.get('turns_remaining', remaining-1))
+        except NovaError as exc:
+            trace['transition_error'] = exc.code
     if remaining > 5 and seconds_left(session) > TIME_MARGIN:
         try:
             chosen = parse_json(brief_call(client, EXAM_SELECT_PROMPT, situation(session, transcript))) or {}
@@ -909,16 +936,13 @@ def consult(client, model):
     if remaining and seconds_left(session) > 60:
         try:
             queue = list(patient_explanations(client, note, diagnosis))
-            # One lead line, as many as fit after every planned line: the worry if we know it, else a summary.
-            worry, facts = concern_words(transcript), patient_facts(session, transcript)
-            wanted = [('concern', worry)] if worry else [('summary', facts)] if facts else []
-            room = remaining - len(queue)
-            lead = []
-            for kind, words in (wanted[-room:] if room > 0 else []):
-                message = reply_message(client, kind, words, note, diagnosis, {line for _, line in lead})
+            # The answer to the patient's own worry goes right after the cause, when a turn is left for it.
+            worry = concern_words(transcript)
+            if worry and remaining - len(queue) - 1 > 0:
+                message = reply_message(client, 'concern', worry, note, diagnosis, {line for _, line in queue})
                 if message:
-                    lead.append((kind, message))
-            queue[0:0] = lead
+                    at = next((n + 1 for n, (kind, _) in enumerate(queue) if kind == 'cause'), 0)
+                    queue.insert(at, ('concern', message))
             queue.append(('invite', INVITATION))
             sent, answers = set(), 0
             while queue:
