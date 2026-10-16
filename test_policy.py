@@ -111,6 +111,23 @@ class PolicyTests(unittest.TestCase):
         child=dict(run.history_queue('여섯 살 남자아이이고 키가 작아요.'))
         self.assertFalse({'chronic','family_chronic','occupation','alcohol'}&set(child))
 
+    def test_a_reply_sees_the_whole_plan_field_and_what_was_already_said(self):
+        c=Scripted([{'text':'대부분 치료로 좋아질 수 있어요.'}])
+        late='Return immediately for chest pain or fainting.'
+        note={'P':{'tests':'[계획/제안, 시행 결과 아님] - TSH : confirm','treatment':'','education':'',
+                   'follow_up':'[계획/제안, 시행 결과 아님] Review in 1 week. '+'x'*600+late}}
+        text=run.reply_message(c,'concern','큰 병일까 걱정돼요.',note,'Graves disease',{'갑상샘이 활발한 병일 가능성이 있어요.'})
+        self.assertEqual(text,'대부분 치료로 좋아질 수 있어요.')
+        request=json.loads(c.calls[0][0][1]['content'])
+        self.assertIn(late,request['plan']['follow_up'])                       # past the old 400-character cut
+        self.assertFalse(request['plan']['tests'].startswith('[계획'))         # the record prefix is not sent
+        self.assertEqual(request['lines_already_said'],['갑상샘이 활발한 병일 가능성이 있어요.'])
+
+    def test_planned_questions_are_cut_to_the_limit(self):
+        c=Scripted([{'questions':['기침이 있나요?','열이 나나요?','가래가 나오나요?','숨이 차나요?','가슴이 아픈가요?']}])
+        session={'initial':{'opening':'기침해요.','vital_signs':'미제공'}}
+        self.assertEqual(len(run.review_questions(c,session,[],limit=3)),3)
+
     def test_unknown_family_answers_get_no_follow_up(self):
         for unknown in ('가족 중 비슷한 증상이 있는지는 확인되지 않았습니다.','가족력은 잘 모르겠어요.','가족 얘기는 확인 안 됐어요.'):
             self.assertEqual(run.family_followups(unknown),[],unknown)

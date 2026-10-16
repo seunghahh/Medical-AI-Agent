@@ -485,6 +485,8 @@ EXAM_CATALOG = {
     'spo2':'산소포화도를 측정하겠습니다',
 }
 EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 5~8개 선택하세요. 호소 부위에 직접 맞는 진찰(예: 눈 증상이면 안구 운동, 옆구리 통증이면 옆구리 두드림 통증)과 주진단 가설을 확인하는 진찰을 먼저 고르고, 위험한 감별진단을 배제하는 진찰, 관련 계통(심장·폐·복부·신경 등)의 기본 진찰을 이어서 고릅니다. 중요한 순서대로 씁니다. "
+    "각 진찰은 서로 다른 정보를 주어야 합니다. 같은 부위를 방식만 바꿔 반복하지 말고(예: 복부 압통을 골랐다면 반발통·머피 징후는 "
+    "그것으로 감별이 달라질 때만), 호소와 무관한 계통은 위험한 감별진단을 배제할 때만 고릅니다. "
     "제공된 catalog의 키만 선택합니다. 없는 동작/검사를 만들지 마세요. 이미 확인한 정보는 반복하지 않습니다. "
     'JSON 하나만: {"ids":["키1","키2"]}. 필요 없으면 빈 배열. catalog=' + json.dumps(EXAM_CATALOG,ensure_ascii=False))
 
@@ -614,7 +616,7 @@ def choose_question(client, session, transcript, used):
     return None
 
 
-def review_questions(client, session, transcript):
+def review_questions(client, session, transcript, limit=None):
     """One planned batch of questions on the complaint and its pertinent positives/negatives (topics review_1..)."""
     result = parse_json(brief_call(client, REVIEW_PROMPT, situation(session, transcript), 6000, 'medium')) or {}
     questions = result.get('questions') if isinstance(result, dict) else None
@@ -626,7 +628,7 @@ def review_questions(client, session, transcript):
         if (0 < len(text) <= MAX_CHARS and asks(text) and not repeated_question(text, transcript)
                 and not any(similar(text, old) for _, old in chosen)):
             chosen.append((f'review_{len(chosen) + 1}', text))
-    return chosen[:MAX_REVIEW]
+    return chosen[:MAX_REVIEW if limit is None else limit]
 
 
 def follow_up_time(source):
@@ -707,7 +709,9 @@ def patient_explanations(client, note, diagnosis):
 
 MAX_EXAMS = 8         # physical exams after the history
 MAX_REVIEW = 8        # planned questions on the complaint and pertinent positives/negatives
-MAX_ADAPTIVE = 3      # one-at-a-time follow-up questions after everything planned
+MAX_ADAPTIVE = 2      # one-at-a-time follow-up questions after everything planned
+MIN_REVIEW = 4        # planned questions on the complaint, however long the fixed history is
+HISTORY_TARGET = 22   # history questions we aim for, so a visit ends near 40 turns instead of 46
 CLOSING_LINES = 9     # turns kept for the closing: worry line, six explanation lines, invitation, one reply
 HISTORY_STOP = MAX_EXAMS + CLOSING_LINES   # stop asking history when this many turns are left
 MAX_EMPATHY = 3       # short acknowledgments in front of questions, per visit
@@ -734,8 +738,10 @@ REPLY_PROMPT = ("You write one short Korean reply from a doctor to a patient dur
     'If you cannot reply safely, return {"text":""}.')
 REPLY_TASKS = {
     'concern': "patient_words is the patient's main worry, and the likely cause has just been explained. Answer that worry "
-               'directly from the working diagnosis and plan: say in plain words how the likely cause relates to what they '
-               'feared, or which planned check will settle it (style: 걱정하신 부분은 검사로 꼭 확인해요). '
+               'itself from the working diagnosis and plan: what the likely cause means for the outcome they fear (e.g. that '
+               'it is usually treatable, or what will tell whether it is serious). Do not repeat the cause and do not name '
+               'tests or treatments: lines_already_said and the next lines cover those. If the plan gives nothing about the '
+               'feared outcome, say it will be checked carefully (style: 걱정하신 부분은 검사로 꼭 확인해요). '
                'Never rule a feared disease in or out beyond what the plan supports.',
     'summary': "Reflect back, in the patient's own words, their main symptoms and how long they have had them. Do not mention "
                'the plan, tests, treatment, reassurance, worry or feelings. Example style: 2주 전부터 기침이 계속되셨군요.',
@@ -817,10 +823,14 @@ def needs_answer(text):
     return bool(WORRIED.search(text)) and not UNKNOWN_REPLY.search(text)
 
 
+PLAN_CONTEXT = 2000   # characters of each plan field a reply may use (a safety cap, not a summary)
+
+
 def reply_message(client, kind, words, note, diagnosis, sent):
     """One sentence answering what the patient just said, from the plan only. Falls back to a fixed, fact-free line,
     and to None when that line (or one like it) was already said."""
-    plan = {key: note['P'][key][:400] for key in ('tests', 'treatment', 'follow_up', 'education')}
+    plan = {key: re.sub(r'^\[계획/제안, 시행 결과 아님\]\s*', '', note['P'][key])[:PLAN_CONTEXT]
+            for key in ('tests', 'treatment', 'follow_up', 'education')}
     if kind == 'answer' and re.search(r'언제|며칠|얼마나 걸|결과', words):
         found = follow_up_time(plan['follow_up'])           # a "when" question gets the time the plan states
         if found:
@@ -829,7 +839,7 @@ def reply_message(client, kind, words, note, diagnosis, sent):
                 return line
     allowed = set(re.findall(r'\d+', ' '.join(plan.values()) + ' ' + words))   # numbers the plan or the patient already used
     request = json.dumps({'task': REPLY_TASKS[kind], 'patient_words': words, 'working_diagnosis': diagnosis,
-                          'plan': plan}, ensure_ascii=False)
+                          'plan': plan, 'lines_already_said': sorted(sent)[:12]}, ensure_ascii=False)
     for attempt in range(2):
         try:
             value = parse_json(brief_call(client, REPLY_PROMPT, request, 2048, 'medium')) or {}
@@ -884,7 +894,8 @@ def consult(client, model):
             if not reviewed and (not queue or queue[0][0] == 'past'):
                 # The complaint itself comes right after the worry (and the medication review), before the routine history.
                 reviewed = True
-                queue[0:0] = review_questions(client, session, transcript)
+                limit = max(MIN_REVIEW, min(MAX_REVIEW, HISTORY_TARGET - len(trace['history']) - len(queue)))
+                queue[0:0] = review_questions(client, session, transcript, limit)
                 continue
             if queue:
                 step=queue.pop(0)
