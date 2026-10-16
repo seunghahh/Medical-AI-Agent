@@ -111,6 +111,21 @@ class PolicyTests(unittest.TestCase):
         child=dict(run.history_queue('여섯 살 남자아이이고 키가 작아요.'))
         self.assertFalse({'chronic','family_chronic','occupation','alcohol'}&set(child))
 
+    def test_unknown_family_answers_get_no_follow_up(self):
+        for unknown in ('가족 중 비슷한 증상이 있는지는 확인되지 않았습니다.','가족력은 잘 모르겠어요.','가족 얘기는 확인 안 됐어요.'):
+            self.assertEqual(run.family_followups(unknown),[],unknown)
+        self.assertTrue(run.family_followups('어머니가 같은 병으로 약을 드세요.'))
+
+    def test_the_cause_line_never_sends_the_patient_to_a_doctor(self):
+        c=Scripted([{'text':'신장 결석일 수 있어 진료를 받아봐요.'},{'text':'신장에 돌이 생겼을 가능성이 있어요.'}])
+        note={'P':dict.fromkeys(('tests','treatment','follow_up','education'),''),'S':{'hpi':'','fh':'','pmh':''}}
+        self.assertEqual(run.patient_explanations(c,note,'Nephrolithiasis'),[('cause','신장에 돌이 생겼을 가능성이 있어요.')])
+
+    def test_every_new_exam_is_one_action_within_the_limit(self):
+        for key in ('pelvic','rectal','breast','hernia','testes','skin_lesion','foot_pulse','calf','spo2'):
+            self.assertIn(key,run.EXAM_CATALOG)
+            self.assertLessEqual(len(run.EXAM_CATALOG[key]),run.MAX_CHARS)
+
     def test_positive_relative_not_erased_by_other_relative_negative(self):
         self.assertTrue(run.family_followups('아빠가 어릴 때 키가 작았다. 다른 가족에는 없다.'))
         self.assertFalse(run.family_followups('가족 중 비슷한 증상은 없다.'))
@@ -134,7 +149,8 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(run.parse_plan(encoded),complete)
         self.assertEqual(run.parse_plan(encoded[:-1]),complete)
         self.assertEqual(run.parse_plan(json.dumps(complete['P'])),complete)
-        self.assertIsNone(run.parse_plan(encoded[:-8]))
+        cut=dict(complete['P']); del cut['education']       # a reply cut off inside the last value keeps the finished ones
+        self.assertEqual(run.parse_plan(encoded[:-8]),{'P':cut})
         self.assertIsNone(run.parse_plan('{"P":{"tests":"unclosed'))
 
     def test_medication_questions_are_specific_and_within_action_limit(self):

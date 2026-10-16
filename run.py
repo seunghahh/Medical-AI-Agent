@@ -220,16 +220,25 @@ def write_record(client, session, transcript, preliminary=True, references='', s
                     candidate=reviewed
             diagnosis=candidate.get('diagnosis')
             if isinstance(diagnosis,str) and diagnosis.strip():
-                plans=parse_plan(brief_call(client,PLAN_PROMPT,
-                    json.dumps({'unchanged_diagnosis':diagnosis,'observations':items},ensure_ascii=False),6000,'medium')) or {}
+                request=json.dumps({'unchanged_diagnosis':diagnosis,'observations':items},ensure_ascii=False)
+                plans,raws={},[]
+                # A long plan can be cut off; a second, shorter attempt keeps tests/follow-up from being lost.
+                for system,effort in ((PLAN_PROMPT,'medium'),(PLAN_PROMPT+PLAN_SHORTER,'low')):
+                    raw=brief_call(client,system,request,PLAN_ALLOWANCE,effort)
+                    raws.append(raw[:1500])
+                    plans=parse_plan(raw) or {}
+                    if any(str(v).strip() for v in plans.get('P',{}).values()):
+                        break
                 candidate['P']=plans.get('P',{})
+                plan_debug={'attempts':len(raws),'raw_heads':raws}   # saved with grounding.json for local debugging
         except NovaError:
             pass
         note,diagnosis,blocked=finalize(candidate,items)
         if state is not None:
             state['grounding']={'sources':items,'blocked':blocked,
                 'mode':'verbatim-observations; generated-assessment-and-plans',
-                'assessment_reason':candidate.get('reason',''),'initial_assessment':locals().get('draft',{})}
+                'assessment_reason':candidate.get('reason',''),'initial_assessment':locals().get('draft',{}),
+                'plan_debug':locals().get('plan_debug',{})}
         return note,diagnosis
     prompt = RECORD_PROMPT + '\nACI-Bench 기록 작성: 모든 값은 영어로 쓰세요. 대화에 나온 검사 결과만 O.tests에 기록합니다.'
     result = {}
@@ -367,7 +376,7 @@ def history_queue(opening):
 
 
 def family_followups(answer):
-    if re.search(r'미확인|UNKNOWN|자료.{0,8}없|없다|없습니다|없어요',answer,re.I):
+    if re.search(r'미확인|UNKNOWN|자료.{0,8}없|없다|없습니다|없어요|확인되지\s*않|확인\s*안|모르',answer,re.I):
         # A negative about another relative must not erase a positive history.
         if not re.search(r'(?:아빠|아버지|엄마|어머니|형제|자매|부모).{0,35}(?:있|작|늦|앓|먹|치료)',answer):
             return []
@@ -463,6 +472,17 @@ EXAM_CATALOG = {
     'spine':'척추 압통을 확인하겠습니다',
     'sinus':'부비동 압통을 확인하겠습니다',
     'capillary':'모세혈관 재충전 시간을 확인하겠습니다',
+    'external_genitalia':'외생식기를 시진하겠습니다',
+    'pelvic':'골반 내진을 하겠습니다',
+    'speculum':'질경 검사를 하겠습니다',
+    'rectal':'직장수지검사를 하겠습니다',
+    'testes':'고환을 촉진하겠습니다',
+    'hernia':'서혜부 탈장을 확인하겠습니다',
+    'breast':'유방을 촉진하겠습니다',
+    'skin_lesion':'피부 병변을 자세히 시진하겠습니다',
+    'foot_pulse':'족배동맥 맥박을 촉진하겠습니다',
+    'calf':'종아리 압통과 부종을 확인하겠습니다',
+    'spo2':'산소포화도를 측정하겠습니다',
 }
 EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 5~8개 선택하세요. 호소 부위에 직접 맞는 진찰(예: 눈 증상이면 안구 운동, 옆구리 통증이면 옆구리 두드림 통증)과 주진단 가설을 확인하는 진찰을 먼저 고르고, 위험한 감별진단을 배제하는 진찰, 관련 계통(심장·폐·복부·신경 등)의 기본 진찰을 이어서 고릅니다. 중요한 순서대로 씁니다. "
     "제공된 catalog의 키만 선택합니다. 없는 동작/검사를 만들지 마세요. 이미 확인한 정보는 반복하지 않습니다. "
@@ -475,10 +495,20 @@ JSON: {"messages":{"cause":"원인 설명", "next":"검사 목적", "treatment":
 치료의 검사/안전 확인 조건을 지우지 말고 약 용량을 제시하지 마세요. 근거가 없으면 빈 문자열로 두세요.
 형식 예시(환자 사실 아님): "피검사로 원인을 확인해요.", "검사 확인 후 치료를 정해요.", "2주 뒤 결과를 함께 확인해요."
 외국어 진단 이름은 의미를 풀어 설명하고 한 문장에 한 가지 뜻만 담으세요.'''
+PLAN_ALLOWANCE = 8000   # the Doctor model's max_tokens; reasoning counts against it
+PLAN_SHORTER = '\nYour previous plan was cut off or unreadable. Keep every field short: UNDER 200 WORDS in total.'
+PLAN_FIELD = re.compile(r'"(tests|treatment|disposition|follow_up|education)"\s*:\s*"((?:[^"\\]|\\.)*)"', re.S)
+
+
 def parse_plan(text):
-    """Accept a complete plan, repairing only one missing outer object brace."""
+    """Accept a complete plan, repairing only one missing outer object brace; from a reply that was cut off, keep every
+    field whose string is complete."""
     start=text.find('{')
     if start<0:return None
+    salvaged={}
+    for key,value in PLAN_FIELD.findall(text[start:]):
+        try:salvaged.setdefault(key,json.loads('"'+value+'"',strict=False))
+        except ValueError:continue
     tail=text[start:].strip()
     if tail.endswith('```'):tail=tail[:-3].rstrip()
     keys={'tests','treatment','disposition','follow_up','education'}
@@ -489,7 +519,7 @@ def parse_plan(text):
         plan=value.get('P')
         if isinstance(plan,dict) and any(k in plan and isinstance(plan[k],str) for k in keys):return {'P':plan}
         if value and set(value)<=keys and all(isinstance(v,str) for v in value.values()):return {'P':value}
-    return None
+    return {'P':salvaged} if salvaged else None
 
 
 def definition_context(state,candidate):
@@ -629,7 +659,8 @@ TREATMENT_FALLBACK = '검사 확인 후 치료 방향을 함께 정해요.'
 def patient_explanations(client, note, diagnosis):
     # Isolate the source for each topic so a differential/treatment cannot replace the main diagnosis.
     fields = (
-        ('cause', diagnosis, '가장 유력한 진단을 쉬운 말로 풀이하고 가능성으로 말하세요. 다른 원인을 추가하지 마세요.'),
+        ('cause', diagnosis, '가장 유력한 진단을 쉬운 말로 풀이하고 가능성으로 말하세요(형식: ~일 가능성이 있어요). 다른 원인을 추가하지 마세요. '
+         '말하는 사람이 의사이므로 진료를 받아 보라고 하지 마세요.'),
         ('next', note['P']['tests'], '가장 필요한 검사 하나와 그 목적을 설명하세요.'),
         ('treatment', note['P']['treatment'], '현재 가장 유력한 진단의 치료 방향 하나를 쉬운 말로 설명하세요(형식 예시: 결과를 보고 약으로 조절할지 정해요). '
          '약 이름·용량은 쓰지 말고 검사 확인 후라는 조건을 유지하세요. 감별에 대한 가정적 치료를 우선하지 마세요. 약이 필요 없다는 계획이면 그렇게 말하세요.'),
@@ -661,6 +692,8 @@ def patient_explanations(client, note, diagnosis):
             conditional=topic!='treatment' or bool(re.search(r'확인|후|검사|상담|고려|관찰|추적',text))
             timing=topic!='follow_up' or not re.search(r'\d',source) or (bool(re.search(r'\d',text)) and set(re.findall(r'\d+',text))<=set(re.findall(r'\d+',source)))
             warning=topic!='warning' or bool(re.search(r'즉시|바로|응급|진료|병원|내원',text))
+            if topic=='cause' and re.search(r'진료\s*(?:를\s*)?받아\s*봐|진료받아봐|병원에\s*가',text):
+                warning=False   # the speaker is the doctor; reuse the retry below
             fresh=not any(similar(text,old) for _,old in output)
             if 0<len(text)<=MAX_CHARS and complete and conditional and timing and warning and fresh and not re.search(r'\?|나요|습니까|할까요',text) and not re.search(r'\d\s*(?:mg|밀리그램|%)',text,re.I):
                 output.append((topic,text));break
