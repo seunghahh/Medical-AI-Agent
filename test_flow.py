@@ -104,12 +104,12 @@ class ClosingReplyTests(unittest.TestCase):
         self.assertEqual(sim.doctor.reply_calls, 3)                           # 1st answer, then 2nd answer plus one retry
         self.assertEqual(spoken[-1], run.INVITATION)
 
-    def test_an_unsafe_or_unusable_reply_is_replaced_by_a_fixed_neutral_line(self):
+    def test_an_unsafe_or_unusable_worry_reply_is_dropped_not_replaced_by_a_generic_line(self):
         for bad in ('이 병은 반드시 완치돼요.', '혹시 다른 증상이 있나요?', '약 20mg을 드세요.', '이건 한 문장으로 말하기에는 너무 길고 복잡한 설명이라서요.',
                     '암은 아니에요.', '큰 병은 없어요.'):
             sim, spoken = run_closing(lambda q: '약이 걱정돼요.' if q == run.CONCERN_QUESTION else UNKNOWN, text=bad)
-            self.assertIn(run.SAFE_REPLIES['concern'], spoken, bad)
             self.assertNotIn(bad, spoken)
+            self.assertNotIn('[실제 설명/concern]', sim.record['P']['education'], bad)   # nothing vacuous said instead
 
     def test_a_tight_budget_keeps_the_planned_lines_and_skips_the_extras(self):
         sim, spoken = run_closing(lambda q: '이게 괜찮을까요?', max_turns=5)    # a worried patient, but only five turns
@@ -324,7 +324,11 @@ class GeneralTests(unittest.TestCase):
             queue = dict(run.history_queue(opening))
             self.assertNotIn('alcohol', queue, opening)
             self.assertEqual(queue['smoking'], '가정에서 담배 연기 노출이 있나요?', opening)
-            self.assertIn('birth', queue, opening)
+        self.assertIn('birth', dict(run.history_queue('생후 8개월 남아가 울어요.')))      # small children: birth history
+        self.assertIn('birth', dict(run.history_queue('여섯 살 남자아이이고 키가 작아요.')))  # growth complaint at any age
+        for opening in ('여섯 살 남자아이이다. 무릎이 아파요.', '8-year-old girl. Itchy rash'):
+            self.assertNotIn('birth', dict(run.history_queue(opening)), opening)          # irrelevant for a rash or a knee
+        self.assertNotIn('occupation', dict(run.history_queue('16-year-old male. Abdominal pain')))
         adult = dict(run.history_queue('35-year-old female. Double vision'))
         self.assertIn('alcohol', adult)
         self.assertIn('menstrual', adult)                                     # an adult woman, even when the opening is English

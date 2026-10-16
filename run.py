@@ -351,6 +351,11 @@ def age_in_years(text):
     return None
 
 
+# Birth and developmental history matter for small children and for growth, development or feeding complaints.
+GROWTH_COMPLAINT = re.compile(r'키|성장|발달|체중|몸무게|말이 늦|걷지|수유|먹지 않|안 먹|growth|develop|height|short|weight|'
+                              r'feeding|speech|walk', re.I)
+
+
 def history_queue(opening):
     age=age_in_years(opening)
     child=age is not None and age<12
@@ -361,6 +366,8 @@ def history_queue(opening):
     for key,question in BASIC_REVIEW:
         if child and key in ADULT_ONLY:
             continue
+        if key=='occupation' and age is not None and age<18:
+            continue                     # a teenager is asked about school or work only if the complaint needs it
         if not child:
             question=ADULT_WORDING.get(key,question)
         if child and key=='smoking':
@@ -368,10 +375,12 @@ def history_queue(opening):
         if medication and key=='medications':
             question='다른 질환 때문에 드시는 약도 있나요?'
         queue.append((key,question))
-    if child:
+    growth=bool(GROWTH_COMPLAINT.search(opening))
+    if child and (age<3 or growth):
         queue.extend((('birth','태어날 때 임신 주수와 몸무게는요?'),
-                      ('development','말·걷기 등 발달은 또래와 비슷했나요?'),
-                      ('daily_life','평소 식사와 수면은 어떤가요?')))
+                      ('development','말·걷기 등 발달은 또래와 비슷했나요?')))
+    if child and (age<6 or growth):
+        queue.append(('daily_life','평소 식사와 수면은 어떤가요?'))
     elif age is not None and 18<=age<=50 and re.search(r'여자|여성|female|woman|women',opening,re.I):
         queue.extend((('menstrual','최근 생리 주기나 양이 달라졌나요?'),
                       ('pregnancy','임신 가능성이나 수유 중인 상태인가요?')))
@@ -485,6 +494,13 @@ EXAM_CATALOG = {
     'foot_pulse':'족배동맥 맥박을 촉진하겠습니다',
     'calf':'종아리 압통과 부종을 확인하겠습니다',
     'spo2':'산소포화도를 측정하겠습니다',
+    'hip_rom':'고관절 운동 범위를 확인하겠습니다',
+    'knee':'무릎 관절을 촉진하겠습니다',
+    'shoulder_rom':'어깨 운동 범위를 확인하겠습니다',
+    'ankle':'발목 관절을 촉진하겠습니다',
+    'back_rom':'허리 운동 범위를 확인하겠습니다',
+    'affect':'기분과 정동을 평가하겠습니다',
+    'thought':'사고 내용을 평가하겠습니다',
 }
 EXAM_SELECT_PROMPT = ("관찰에 근거해 원인 감별·안전에 가장 도움이 되는 신체진찰을 3~6개 선택하세요. 결과에 따라 진단이나 처치가 달라질 진찰만 고르고, 그렇지 않은 진찰은 개수를 채우려고 넣지 마세요. 호소 부위에 직접 맞는 진찰(예: 눈 증상이면 안구 운동, 옆구리 통증이면 옆구리 두드림 통증)과 주진단 가설을 확인하는 진찰을 먼저 고르고, 위험한 감별진단을 배제하는 진찰, 관련 계통(심장·폐·복부·신경 등)의 기본 진찰을 이어서 고릅니다. 중요한 순서대로 씁니다. "
     "각 진찰은 서로 다른 정보를 주어야 합니다. 같은 부위를 방식만 바꿔 반복하지 말고(예: 복부 압통을 골랐다면 반발통·머피 징후는 "
@@ -672,7 +688,8 @@ def patient_explanations(client, note, diagnosis):
         ('self_care', note['P']['education'],
          '원문에 명시된 일상 관리나 약 복용 시 주의 하나를 설명하세요. 응급 행동이 필요한 경고 증상은 제외합니다. 없으면 빈 문자열.'),
         ('warning', note['P']['education']+' '+note['P']['follow_up'],
-         '원문에 명시된 위험 증상 하나와 즉시 진료 행동을 설명하세요. 위험 증상이 없으면 빈 문자열.'),
+         '원문에 명시된 위험 증상 중 이 진단에서 가장 위험하고 직접 관련된 것 하나와 즉시 진료 행동을 설명하세요. '
+         '위험 증상이 없으면 빈 문자열.'),
     )
     output=[]
     for topic,source,task in fields:
@@ -729,7 +746,7 @@ TRANSITION = '말씀 잘 들었어요. 이제 진찰해 볼게요.'
 EXAM_CUE = ' 이제 진찰해 볼게요.'
 SIMILAR = 0.40      # lines overlapping at least this much count as the same thing
 MAX_ANSWERS = 2      # replies to what the patient says during the closing
-SAFE_REPLIES = {'concern': '걱정하신 부분은 검사로 꼭 확인해요.', 'answer': '검사로 정확히 확인하고 함께 정해요.'}
+SAFE_REPLIES = { 'answer': '검사로 정확히 확인하고 함께 정해요.'}
 WORRIED = re.compile(r'\?|걱정(?:돼|되|이|스)|무서|두려|불안|있을까요|될까요|할까요|괜찮을까요|어떡')
 UNKNOWN_REPLY = re.compile(r'미확인|UNKNOWN|자료.{0,8}없|확인되지\s*않|확인\s*안|잘\s*모르|모르겠|알 수 없|기억(?:이)?\s*(?:안|나지)')
 REPLY_PROMPT = ("You write one short Korean reply from a doctor to a patient during a first visit. "
@@ -744,7 +761,9 @@ REPLY_TASKS = {
                'it is usually treatable, or what will tell whether it is serious). Do not repeat the cause and do not name '
                'tests or treatments: lines_already_said and the next lines cover those. If the plan gives nothing about the '
                'feared outcome, say it will be checked carefully (style: 걱정하신 부분은 검사로 꼭 확인해요). '
-               'Never rule a feared disease in or out beyond what the plan supports.',
+               'Never rule a feared disease in or out beyond what the plan supports. If patient_words only names their '
+               'symptom and voices no fear or question about it (what it is, whether it is serious, whether it will get '
+               'better), return {"text":""}: there is nothing to answer.',
     'summary': "Reflect back, in the patient's own words, their main symptoms and how long they have had them. Do not mention "
                'the plan, tests, treatment, reassurance, worry or feelings. Example style: 2주 전부터 기침이 계속되셨군요.',
     'answer': 'Answer what the patient just asked or worried about, using only the plan. If they asked when, give the '
