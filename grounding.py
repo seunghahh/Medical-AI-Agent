@@ -48,6 +48,14 @@ def normalize_measurements(text):
     return MEASURE.sub(replace, unicodedata.normalize('NFC', text))
 
 
+ASKS = re.compile(r'나요|습니까|세요|한가요|알려|말씀해|말해')
+
+
+def asks(content):
+    """True when a doctor line reads as a question, so the patient's reply is kept as an observation."""
+    return '?' in content or bool(ASKS.search(content))
+
+
 def sources(session, transcript):
     initial = session['initial']
     items = [{'id': 'opening', 'kind': 'opening', 'question': '', 'raw': initial['opening']},
@@ -59,7 +67,7 @@ def sources(session, transcript):
             question = match.groups()
         elif line.startswith('환자: ') and question:
             turn, content = question
-            asked = '?' in content or bool(re.search(r'나요|습니까|세요|한가요|알려|말씀해|말해', content))
+            asked = asks(content)
             consent = re.search(r'검사|치료|처방|의뢰|복용', content) and re.search(
                 r'할까요|하시겠|하실래|하겠습니다|진행|요청|추가|검사\?$', content)
             # shortcut: Intent uses wording patterns; keep Q/A provenance for ambiguous questions.
@@ -74,7 +82,7 @@ def sources(session, transcript):
                 items.append({'id': f'turn{turn}', 'kind': 'exam', 'question': content, 'raw': answer})
             question = None
     for item in items:
-        item['value'] = normalize_measurements(item['raw'])
+        item['value'] = unicodedata.normalize('NFC', item['raw'])
     return items
 
 
@@ -129,6 +137,23 @@ def unsafe_generated(text, items):
     return ''
 
 
+def plan_clauses(value):
+    """Keep safe plan clauses when a separate clause contains an unsupported claim."""
+    return [part.strip() for part in re.split(r'(?<=[.!?。])\s+|[;；\n]+', value) if part.strip()]
+
+
+def unsafe_plan_clause(text, items):
+    # Conditional future growth rates are decision thresholds, not measured patient height.
+    checked = re.sub(
+        r'\b(?:if|when|unless)\b[^.!?;\n]*\b(?:growth|height)\s+(?:velocity|rate)'
+        r'[^.!?;\n]*?\d+(?:\.\d+)?\s*cm\s*(?:/|per\s+)(?:year|yr|month)s?\b',
+        '', text, flags=re.I)
+    checked = re.sub(
+        r'(?:성장\s*속도|성장률)[^.!?;\n]*?\d+(?:\.\d+)?\s*cm\s*/\s*(?:년|연|월)'
+        r'\s*(?:미만|이하|이상|초과)(?:이면|라면|일 때|인 경우)', '', checked)
+    return unsafe_generated(checked, items)
+
+
 def finalize(candidate, items):
     note = source_record(items)
     blocked = []
@@ -155,11 +180,15 @@ def finalize(candidate, items):
             value = plans.get(field, '')
             if not isinstance(value, str):
                 continue
-            reason = unsafe_generated(value, items)
-            if reason:
-                blocked.append({'field': 'P.' + field, 'reason': reason, 'rejected': value})
-            elif value.strip():
-                note['P'][field] = '[계획/제안, 시행 결과 아님] ' + value.strip()
+            accepted = []
+            for clause in plan_clauses(value):
+                reason = unsafe_plan_clause(clause, items)
+                if reason:
+                    blocked.append({'field': 'P.' + field, 'reason': reason, 'rejected': clause})
+                else:
+                    accepted.append(clause)
+            if accepted:
+                note['P'][field] = '[계획/제안, 시행 결과 아님] ' + ' '.join(accepted)
     return note, diagnosis, blocked
 
 

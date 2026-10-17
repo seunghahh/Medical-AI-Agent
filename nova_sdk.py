@@ -139,10 +139,10 @@ class Client:
         return self.action('DIAGNOSE', note=note, diagnosis=diagnosis, request_id=request_id)
 
     def chat(self, messages, *, max_tokens=2048, reasoning_effort=None, temperature=None, model=None, request_id=None):
-        # gpt-oss-20b counts its reasoning in max_tokens; a small budget can end before the answer starts.
+        # The Doctor model counts its reasoning in max_tokens; a small budget can end before the answer starts.
         # reasoning_effort: 'low', 'medium' or 'high' (None = model default). Higher thinks longer and costs more.
         # temperature: 0-2 (None = model default).
-        # model: None = the Doctor (openai/gpt-oss-20b). With a development key and no session, also
+        # model: None = the Doctor (openai/gpt-6-luna since 2026-10-13; the old id openai/gpt-oss-20b still means the Doctor). With a development key and no session, also
         # 'openai/gpt-6.1-sol' or 'openai/gpt-6-luna' (reasoning_effort none..xhigh, no temperature), paid from team credit.
         body = {'request_id': request_id or str(uuid.uuid4()), 'messages': messages, 'max_tokens': max_tokens}
         if model is not None:
