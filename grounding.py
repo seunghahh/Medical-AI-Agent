@@ -2,6 +2,7 @@
 import re
 import unicodedata
 from nova_sdk import empty_record
+from quantity_text import normalize_quantities
 
 ONES = {'일': 1, '이': 2, '삼': 3, '사': 4, '오': 5, '육': 6, '칠': 7, '팔': 8, '구': 9}
 NATIVE = {'한': 1, '하나': 1, '두': 2, '둘': 2, '세': 3, '셋': 3, '석': 3, '네': 4, '넷': 4,
@@ -10,8 +11,9 @@ NATIVE = {'한': 1, '하나': 1, '두': 2, '둘': 2, '세': 3, '셋': 3, '석': 
           '일흔': 70, '여든': 80, '아흔': 90}
 UNITS = {'살': '세', '세': '세', '킬로그램': 'kg', '키로그램': 'kg', '키로그람': 'kg',
          '키로': 'kg', '킬로': 'kg', 'kg': 'kg', '㎏': 'kg', '센티미터': 'cm', 'cm': 'cm'}
-MEASURE = re.compile(r'(?<![가-힣\w])([가-힣]+|\d+(?:\.\d+)?)\s*(' + '|'.join(UNITS) +
-                     r')(?=$|[^가-힣a-zA-Z]|에서|으로|이다|이고|이며|입니다|이었|였|에|의|은|는|을|를|이|가|도|로|와|과|만|부터|까지)')
+UNIT_BOUNDARY = r'(?=$|[^가-힣a-zA-Z]|예요|씩|에서|으로|이다|이고|이며|입니다|이었|였|에|의|은|는|을|를|이|가|도|로|와|과|만|부터|까지)'
+MEASURE = re.compile(r'(?<![가-힣\w])([가-힣]+|\d+(?:\.\d+)?)\s*(' + '|'.join(UNITS) + ')' + UNIT_BOUNDARY)
+
 MISSING = re.compile(r'미확인|UNKNOWN|모르|몰라|기억.{0,5}안|자료.{0,8}없|미제공|not (?:recorded|provided|known)', re.I)
 
 
@@ -41,11 +43,7 @@ def korean_number(word):
 
 
 def normalize_measurements(text):
-    def replace(match):
-        value, unit = match.groups()
-        number = value if value[0].isdigit() else korean_number(value)
-        return f'{number}{UNITS[unit]}' if number is not None else match.group()
-    return MEASURE.sub(replace, unicodedata.normalize('NFC', text))
+    return normalize_quantities(text)
 
 
 ASKS = re.compile(r'나요|습니까|세요|한가요|알려|말씀해|말해')
@@ -87,8 +85,8 @@ def sources(session, transcript):
 
 
 def render(item):
-    prefix = f'[{item["id"]}] '
-    return prefix + (f'질문/요청: {item["question"]}\n답변: ' if item['question'] else '') + item['value']
+    # Source IDs stay in the trace; the submitted record carries no internal turn labels.
+    return (f'질문/요청: {item["question"]}\n답변: ' if item['question'] else '') + item['value']
 
 
 def source_record(items):
@@ -127,14 +125,39 @@ def measurements(text):
             re.findall(r'(\d+(?:\.\d+)?)\s*(세|살|kg|cm)', normalize_measurements(text))}
 
 
-def unsafe_generated(text, items):
-    # shortcut: Pattern checks are not clinical verification; A/P still need independent review.
+def unsupported_measurement(text, items):
     observed = '\n'.join(item['value'] for item in items)
     if measurements(text) - measurements(observed):
         return '관찰에 없는 나이/체중/키 수치'
+    return ''
+
+
+def unsafe_generated(text, items):
+    # shortcut: Pattern checks are not clinical verification; A/P still need independent review.
+    error=unsupported_measurement(text,items)
+    if error:return error
     if re.search(r'\(-\)|음성|무병력|(?:흡연|알레르기|발열|과거력|가족력|식욕|소견).{0,15}(?:없|정상)', text):
         return '계획에 포함된 환자 음성/정상 단정'
     return ''
+
+
+def plan_clauses(value):
+    """Keep safe plan clauses when a separate clause contains an unsupported claim."""
+    return [part.strip() for part in re.split(r'(?<=[.!?。])\s+|[;；\n]+', value) if part.strip()]
+
+
+def unsafe_plan_clause(text, items):
+    # An explicit condition is hypothetical, never a claim that it was observed.
+    text = re.sub(r'\[조건\s*:[^\]\n]+\]', '', text)
+    # Conditional future growth rates are decision thresholds, not measured patient height.
+    checked = re.sub(
+        r'\b(?:if|when|unless)\b[^.!?;\n]*\b(?:growth|height)\s+(?:velocity|rate)'
+        r'[^.!?;\n]*?\d+(?:\.\d+)?\s*cm\s*(?:/|per\s+)(?:year|yr|month)s?\b',
+        '', text, flags=re.I)
+    checked = re.sub(
+        r'(?:성장\s*속도|성장률)[^.!?;\n]*?\d+(?:\.\d+)?\s*cm\s*/\s*(?:년|연|월)'
+        r'\s*(?:미만|이하|이상|초과)(?:이면|라면|일 때|인 경우)', '', checked)
+    return unsafe_generated(checked, items)
 
 
 def finalize(candidate, items):
@@ -163,11 +186,24 @@ def finalize(candidate, items):
             value = plans.get(field, '')
             if not isinstance(value, str):
                 continue
-            reason = unsafe_generated(value, items)
-            if reason:
-                blocked.append({'field': 'P.' + field, 'reason': reason, 'rejected': value})
-            elif value.strip():
-                note['P'][field] = '[계획/제안, 시행 결과 아님] ' + value.strip()
+            accepted = []
+            for clause in plan_clauses(value):
+                reason = unsafe_plan_clause(clause, items)
+                if reason:
+                    rejected={'field': 'P.' + field, 'reason': reason, 'rejected': clause}
+                    if field=='disposition':
+                        prefix=re.split(r'[:：]',clause,maxsplit=1)[0]
+                        sep=bool(re.search(r'[:：]',clause))
+                        if (sep and re.search(r'외래|입원|응급|의뢰|귀가|진료|outpatient|refer|admi|emergen|discharg',prefix,re.I)
+                                and not unsafe_plan_clause(prefix,items)):
+                            pending='[조건: 처치 전 안전성 확인] '+prefix.strip(' •-*')
+                            accepted.append(pending)
+                            rejected['preserved_action']=pending
+                    blocked.append(rejected)
+                else:
+                    accepted.append(clause)
+            if accepted:
+                note['P'][field] = '[계획/제안, 시행 결과 아님] ' + ' '.join(accepted)
     return note, diagnosis, blocked
 
 
