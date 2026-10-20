@@ -46,7 +46,11 @@ def guideline_root():
             raise FileNotFoundError(f'NOVA_GUIDELINES_DIR not found: {root}')
         return root
     server = Path('/opt/nova/guidelines')
-    return server if server.is_dir() else Path(__file__).resolve().parent.parent / 'guidelines'
+    local = Path(__file__).resolve().parent
+    candidates = (server, local / 'guidelines', local.parent / 'guidelines',
+                  local.parent.parent / 'guidelines')
+    # Standalone agents and experiments/candN share the same project corpus.
+    return next((p for p in candidates if p.is_dir()), local / 'guidelines')
 
 
 def metadata(text):

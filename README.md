@@ -4,6 +4,12 @@ A Python agent for clinical conversations. It gathers patient history, requests 
 
 ![Clinical conversation interface demo](docs/nova-demo.gif)
 
+## Runtime
+
+The repository root contains the cand23 agent. Its eight runtime files are `run.py`, `workflow.py`, `soap_writer.py`, `grounding.py`, `quantity_text.py`, `nova_sdk.py`, `rag.py`, and `requirements.txt`. The workflow collects observations and coordinates the consultation; the SOAP writer formats and checks the final record against those observations.
+
+Experiments, saved encounters, tests, reference cases, provider presets, and development self-grading tools are kept outside the tracked runtime. The demo shows a separate local interface, not part of the submitted agent.
+
 ## Run
 
 Use Python 3.12 or newer. The agent uses the Python standard library.

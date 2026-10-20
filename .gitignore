@@ -15,5 +15,8 @@ SOURCES.md
 /plan/
 /plans/
 /samples/
+/guidelines/
+/experiments/
 
 sample_reference.py
+/self_grade.py
