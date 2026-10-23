@@ -6,16 +6,6 @@ A Python agent for clinical conversations. It gathers patient history, requests 
 
 ## Runtime
 
-The repository root contains the original cand103b agent (`lb33`), copied without runtime changes from `hsh_test 1022_cand103b_lb33.zip`.
-
-Submission ZIP SHA-256:
-
-```text
-b72f588d33a18b78c0162ab89c1c14f7f743a4433cd712dbfa96ffd0d4c224b1
-```
-
-The eight runtime files are:
-
 | File | Purpose |
 | --- | --- |
 | `run.py` | Consultation flow, model requests, history and examination selection, diagnosis review, plans, patient explanations, and final SOAP formatting through `write_record()` |
