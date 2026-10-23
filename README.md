@@ -6,7 +6,28 @@ A Python agent for clinical conversations. It gathers patient history, requests 
 
 ## Runtime
 
-The repository root contains the cand23 agent. Its eight runtime files are `run.py`, `workflow.py`, `soap_writer.py`, `grounding.py`, `quantity_text.py`, `nova_sdk.py`, `rag.py`, and `requirements.txt`. The workflow collects observations and coordinates the consultation; the SOAP writer formats and checks the final record against those observations.
+The repository root contains the original cand103b agent (`lb33`), copied without runtime changes from `hsh_test 1022_cand103b_lb33.zip`.
+
+Submission ZIP SHA-256:
+
+```text
+b72f588d33a18b78c0162ab89c1c14f7f743a4433cd712dbfa96ffd0d4c224b1
+```
+
+The eight runtime files are:
+
+| File | Purpose |
+| --- | --- |
+| `run.py` | Consultation flow, model requests, history and examination selection, diagnosis review, plans, patient explanations, and final SOAP formatting through `write_record()` |
+| `grounding.py` | Observation sources and validation of generated record content |
+| `record_sections.py` | Routing observations into SOAP sections and linking planned warning advice to follow-up |
+| `care_references.py` | Selecting local guideline passages to support care planning |
+| `rag.py` | Local guideline indexing, retrieval, and source metadata |
+| `quantity_text.py` | Normalization of Korean quantities and units |
+| `nova_sdk.py` | NOVA session API client and agent entry point |
+| `requirements.txt` | Dependency declaration; this release uses the Python standard library |
+
+SOAP formatting is part of `run.py`; this release does not require `workflow.py` or `soap_writer.py`. The consultation targets 33 interaction turns, with room for patient responses within the session's 50-turn limit. This is the submitted implementation, not a revised version of its planning, validation, or closing behavior.
 
 Experiments, saved encounters, tests, reference cases, provider presets, and development self-grading tools are kept outside the tracked runtime. The demo shows a separate local interface, not part of the submitted agent.
 
